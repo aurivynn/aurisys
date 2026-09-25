@@ -1,0 +1,3 @@
+# AuriSYS
+
+Fun os project
