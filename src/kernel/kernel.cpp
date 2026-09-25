@@ -1,4 +1,4 @@
-// kernel: proove the c++ works, then dump the e820 map
+// kernel
 
 #include "arch/bootinfo.h"
 
@@ -7,6 +7,7 @@
 #include "drivers/serial.h"
 #include "lib/mem.h"
 #include "lib/print.h"
+#include "shell/terminal.h"
 
 #include <stdarg.h>
 #include <stdint.h>
@@ -134,6 +135,9 @@ extern "C" void kernel_main(bootinfo* bi) {
 	console::setcolor(0xE8E8E8, 0x101020);
 
 	serial::puts("\r\nAURISYS: all tests passed\r\n");
+	serial::puts("\r\nAURISYS: terminal ready\r\n");
+
+	terminal::run(); // never returns
 
 	for (;;)
 		asm volatile("hlt"); // done

@@ -53,6 +53,11 @@ void putchar(char c) {
 		while (g_cx % 4)
 			++g_cx;
 		break;
+	case '\b': // erase the cell behind the cursor
+		if (g_cx > 0)
+			--g_cx;
+		fb::drawchar(g_cx * 8, g_cy * 16, ' ', g_fg, g_bg);
+		break;
 	default:
 		fb::drawchar(g_cx * 8, g_cy * 16, c, g_fg, g_bg);
 		++g_cx;
@@ -79,5 +84,11 @@ void printf(const char* fmt, ...) {
 	print::vprintf(&emit, fmt, ap);
 	va_end(ap);
 }
+
+int cx() { return g_cx; }
+
+int cy() { return g_cy; }
+
+uint32_t bg() { return g_bg; }
 
 } // namespace console

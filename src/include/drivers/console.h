@@ -11,5 +11,8 @@ void clear();
 void putchar(char c);
 void puts(const char* s);
 void printf(const char* fmt, ...);
+int cx();	   // cursor column, in cells
+int cy();	   // cursor row, in cells
+uint32_t bg(); // current bg color
 
 } // namespace console

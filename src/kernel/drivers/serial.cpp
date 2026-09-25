@@ -37,4 +37,10 @@ void puts(const char* s) {
 		putc(*s++);
 }
 
+int recv() {
+	if ((inb(COM1 + 5) & 1) == 0)
+		return -1; // rx fifo empty
+	return inb(COM1);
+}
+
 } // namespace serial

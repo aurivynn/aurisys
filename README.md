@@ -7,5 +7,4 @@ Fun os project
 ```sh
 make
 make run
-make clean
 ```
