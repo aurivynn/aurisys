@@ -1,0 +1,27 @@
+name: build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            nasm qemu-system-x86 gcc-multilib g++-multilib
+
+      - name: Build all stages + kernel
+        run: make all
+
+      - name: Boot test (serial log checked)
+        run: make test
+
+      - name: Dump serial log on failure
+        if: failure()
+        run: cat serial.log || true

@@ -43,6 +43,9 @@ start:
 
     call store_bootinfo
 
+    call load_kernel
+    jc  .fatal_kernel
+
     call enable_a20
     mov si, msg_a20
     call serial_puts
@@ -54,6 +57,10 @@ start:
     mov cr0, eax
     jmp 0x08:pmode32
 
+.fatal_kernel:
+    mov si, msg_krn_fatal
+    call serial_puts
+    jmp .halt
 .fatal_vbe:
     mov si, msg_fatal_vbe
     call serial_puts
@@ -267,7 +274,7 @@ vbe_find_mode:
     mov [fb_addr], eax
 .fbok:
     mov word [vbe_mode], 0
-    mov dword [fb_pitch], 5120   ; 1280 * 4 bytes per scanline
+    mov dword [fb_pitch], 5120 ; 1280 * 4 bytes per scanline
 
     mov si, msg_mode_dispi
     call serial_puts
@@ -481,6 +488,57 @@ store_bootinfo:
     pop ax
     ret
 
+; load the kernel: header at LBA 9, kernel at LBA 10+ into 0x10000
+load_kernel:
+    mov dx, 0x1000
+    mov es, dx
+    mov si, dap_khdr
+    mov ah, 0x42
+    mov dl, [boot_drive]
+    int 0x13
+    jc  .err_disk
+    mov dx, 0x1000
+    mov es, dx
+    cmp dword [es:0x0000], 0x4B525541 ; "AURK"
+    jne .err_magic
+    mov eax, [es:0x0004] ; kernel size in bytes
+    test eax, eax
+    jz  .err_magic
+    mov [kernel_size], eax
+    add eax, 511 ; sectors = ceil(size / 512)
+    shr eax, 9
+    cmp eax, 127 ; buffer is 0x10000..0x20000 minus header
+    ja  .err_big
+    mov word [dap_kern + 2], ax
+    mov si, dap_kern
+    mov ah, 0x42
+    mov dl, [boot_drive]
+    int 0x13
+    jc  .err_disk
+    mov si, msg_kernel
+    call serial_puts
+    mov eax, [kernel_size]
+    call print_hex32
+    mov si, msg_crlf
+    call serial_puts
+    clc
+    ret
+.err_disk:
+    mov si, msg_krn_disk
+    call serial_puts
+    stc
+    ret
+.err_magic:
+    mov si, msg_krn_magic
+    call serial_puts
+    stc
+    ret
+.err_big:
+    mov si, msg_krn_big
+    call serial_puts
+    stc
+    ret
+
 ; 32 bit
 BITS 32
 
@@ -500,14 +558,16 @@ pmode32:
     mov esi, msg_pmode
     call serial_puts_32
 
-    call draw_pattern
+    ; copy the kernel from the low load buffer to 0x100000 (0x10000 holds the header, kernel image starts at 0x10200)
+    mov esi, 0x10200
+    mov edi, 0x100000
+    mov ecx, [kernel_size]
+    rep movsb
 
-    mov esi, msg_done
+    mov esi, msg_jump
     call serial_puts_32
-    mov eax, [fb_addr]
-    call print_hex32_32
-    mov esi, msg_crlf
-    call serial_puts_32
+    mov ebx, BOOTINFO
+    jmp 0x08:0x100000 ; far jump into the kernel
 
 .halt:
     hlt
@@ -537,132 +597,6 @@ serial_puts_32:
 .done:
     ret
 
-print_hex32_32:
-    push eax
-    push ecx
-    mov ecx, 8
-.loop:
-    rol eax, 4
-    push eax
-    and al, 0x0F
-    cmp al, 10
-    jb .digit
-    add al, 'A' - 10
-    jmp .put
-.digit:
-    add al, '0'
-.put:
-    call serial_putc_32
-    pop eax
-    dec ecx
-    jnz .loop
-    pop ecx
-    pop eax
-    ret
-
-; fill_rect(x=edi, y=esi, w=edx, h=ecx, color=eax)
-fill_rect:
-    push ebp
-    mov ebp, esp
-    sub esp, 4
-    mov [ebp - 4], eax ; color
-    mov eax, [fb_pitch]
-    imul eax, esi ; y * pitch
-    mov ebx, eax
-    shl edi, 2 ; x * 4
-    add ebx, [fb_addr]
-    add ebx, edi ; base pointer
-    mov esi, ecx ; rows left
-.rows:
-    mov ecx, edx ; width
-    mov edi, ebx
-    mov eax, [ebp - 4]
-    rep stosd
-    add ebx, [fb_pitch]
-    dec esi
-    jnz .rows
-    add esp, 4
-    pop ebp
-    ret
-
-draw_pattern:
-    xor esi, esi ; y
-.yloop:
-    xor edi, edi ; x
-.xloop:
-    ; color = (r<<16) | (g<<8) | b   with r=x>>2, g=y>>2, b=(x+y)>>4
-    mov eax, edi
-    shr eax, 2
-    shl eax, 16
-    mov ebx, esi
-    shr ebx, 2
-    shl ebx, 8
-    or  eax, ebx
-    mov ebx, edi
-    add ebx, esi
-    shr ebx, 4
-    or  eax, ebx
-    ; pixel address = fb + y*pitch + x*4
-    push esi
-    push edi
-    push eax
-    mov eax, [fb_pitch]
-    imul eax, esi
-    add eax, [fb_addr]
-    mov ebx, edi
-    shl ebx, 2
-    add eax, ebx
-    pop ebx ; color
-    mov [eax], ebx
-    pop edi
-    pop esi
-    inc edi
-    cmp edi, 1280
-    jb  .xloop
-    inc esi
-    cmp esi, 960
-    jb  .yloop
-
-    ; color bars (red, green, blue, white, black) at y=400..560
-    mov edi, 40
-    mov esi, 400
-    mov edx, 200
-    mov ecx, 160
-    mov eax, 0x0000FF ; red
-    call fill_rect
-    mov edi, 290
-    mov eax, 0x00FF00 ; green
-    call fill_rect
-    mov edi, 540
-    mov eax, 0xFF0000 ; blue
-    call fill_rect
-    mov edi, 790
-    mov eax, 0xFFFFFF ; white
-    call fill_rect
-    mov edi, 1040
-    mov eax, 0x000000 ; black
-    call fill_rect
-
-    ; white border frame
-    mov edi, 0
-    mov esi, 0
-    mov edx, 1280
-    mov ecx, 8
-    mov eax, 0xFFFFFF
-    call fill_rect ; top
-    mov edi, 0
-    mov esi, 952
-    call fill_rect ; bottom
-    mov edi, 0
-    mov esi, 0
-    mov edx, 8
-    mov ecx, 960
-    call fill_rect ; left
-    mov edi, 1272
-    mov esi, 0
-    call fill_rect ; right
-    ret
-
 ; data
 BITS 16
 align 4
@@ -673,6 +607,22 @@ mem_count: dw 0
 e820_ptr: dw 0x3000
 boot_drive: db 0
 
+; kernel load DAPs
+align 4
+dap_khdr:
+    db 0x10, 0x00 ; DAP size, reserved
+    dw 1 ; count = 1 sector (header)
+    dw 0x0000 ; offset
+    dw 0x1000 ; segment -> 0x00010000
+    dq 9 ; LBA 9 (kernel header)
+dap_kern:
+    db 0x10, 0x00
+    dw 0 ; count filled in at runtime
+    dw 0x0200 ; offset -> 0x10000 + 512
+    dw 0x1000 ; segment -> 0x00010000
+    dq 10 ; LBA 10 (kernel image)
+kernel_size: dd 0
+
 msg_banner: db "AURISYS stage2 up (real mode)", 13, 10, 0
 msg_mode_bios: db "AURISYS stage2: 1280x960 MODE OK (VBE BIOS path)", 13, 10, 0
 msg_mode_dispi: db "AURISYS stage2: 1280x960 MODE OK (Bochs-VBE registers)", 13, 10, 0
@@ -680,8 +630,13 @@ msg_fb: db "AURISYS VBE: LFB=0x", 0
 msg_pitch: db " pitch=0x", 0
 msg_e820: db "AURISYS E820: ", 0
 msg_a20: db "AURISYS A20: enabled", 13, 10, 0
-msg_pmode: db "AURISYS stage2: protected mode OK, drawing test pattern", 13, 10, 0
-msg_done: db "AURISYS stage2: pattern drawn, LFB still @ 0x", 0
+msg_pmode: db "AURISYS stage2: protected mode OK", 13, 10, 0
+msg_kernel: db "AURISYS kernel: loaded size=0x", 0
+msg_jump: db "AURISYS stage2: jumping to kernel @ 0x100000", 13, 10, 0
 msg_crlf: db 13, 10, 0
 msg_fatal_vbe:  db "AURISYS FATAL: could not set 1280x960x32 mode", 13, 10, 0
 msg_fatal_nofb: db "AURISYS FATAL: framebuffer address unknown", 13, 10, 0
+msg_krn_disk:  db "AURISYS FATAL: disk read error loading kernel", 13, 10, 0
+msg_krn_magic: db "AURISYS FATAL: bad kernel header magic (LBA 9)", 13, 10, 0
+msg_krn_big:   db "AURISYS FATAL: kernel too big for 0x10000 buffer", 13, 10, 0
+msg_krn_fatal: db "AURISYS FATAL: kernel load failed", 13, 10, 0
