@@ -114,13 +114,11 @@ $(BUILD)/app/rt/crt0.o: src/apps/crt0.asm | $(BUILD)
 	@mkdir -p $(@D)
 	$(NASM) $(AFLAGS) src/apps/crt0.asm -o $@
 
-$(BUILD)/app/%.o: src/apps/%.cpp src/apps/lib.h $(INCLUDES) | $(BUILD)
-	@mkdir -p $(@D)
-	$(CXX) $(APPFLAGS) -c $< -o $@
 
-$(BUILD)/rootfs/bin/%: $(BUILD)/app/%.o $(APP_RT_OBJS) src/apps/linker.ld | $(BUILD)
-	@mkdir -p $(@D)
-	$(LD) -m elf_i386 -T src/apps/linker.ld -o $@ $(APP_RT_OBJS) $<
+$(BUILD)/rootfs/bin/%: src/apps/%.cpp src/apps/lib.h src/apps/linker.ld $(APP_RT_OBJS) | $(BUILD)
+	@mkdir -p $(@D) $(BUILD)/app
+	$(CXX) $(APPFLAGS) -c $< -o $(BUILD)/app/$*.o
+	$(LD) -m elf_i386 -T src/apps/linker.ld -o $@ $(APP_RT_OBJS) $(BUILD)/app/$*.o
 	@chmod +x $@
 
 $(BUILD)/%.o: src/kernel/%.cpp $(INCLUDES) | $(BUILD)

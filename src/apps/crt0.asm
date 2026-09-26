@@ -25,3 +25,5 @@ _start:
     call main
     push eax
     call exit
+
+SECTION .note.GNU-stack noalloc noexec nowrite progbits

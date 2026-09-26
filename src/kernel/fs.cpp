@@ -570,7 +570,7 @@ int list_dir(uint32_t dir_ino, dirent_cb cb, void* ctx) {
 				break;
 			const uint32_t ino = r32(g_b2 + off);
 			const uint8_t nlen = g_b2[off + 6];
-			if (ino != 0 && nlen > 0 && nlen < sizeof g_name) {
+			if (ino != 0 && nlen > 0) {
 				memcpy(g_name, g_b2 + off + 8, nlen);
 				g_name[nlen] = 0;
 				++count;

@@ -76,3 +76,5 @@ GLOBAL g_sys_ret
 g_exec_ctx_esp: dd 0
 g_exec_ctx_ret: dd 0
 g_sys_ret: dd 0
+
+SECTION .note.GNU-stack noalloc noexec nowrite progbits
