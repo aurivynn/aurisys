@@ -168,6 +168,7 @@ int main() {
 	check("idt check", log.find("idt=OK") != std::string::npos);
 	check("timer check", log.find("timer=OK") != std::string::npos);
 	check("heap check", log.find("heap=OK") != std::string::npos);
+	check("paging check", log.find("paging=OK") != std::string::npos);
 
 	stop_qemu();
 

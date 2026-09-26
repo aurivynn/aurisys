@@ -2,6 +2,7 @@
 
 #include "arch/bootinfo.h"
 #include "arch/idt.h"
+#include "arch/paging.h"
 
 #include "drivers/console.h"
 #include "drivers/fb.h"
@@ -139,6 +140,21 @@ void test_heap() {
 	both("    heap=%s\n", ok ? "OK" : "FAIL");
 }
 
+void test_paging() {
+	bool ok = true;
+	uint32_t cr3;
+	asm volatile("mov %%cr3, %0" : "=r"(cr3));
+	ok = ok && (cr3 == (uint32_t)(uintptr_t)paging::g_pdpt);
+
+	const uint32_t vaddrs[] = {0x00000000u, 0x00100000u, 0x07FE0000u, 0x80000000u, 0xFD000000u, 0xFFFFFFFFu};
+	for (uint32_t va : vaddrs) {
+		const uint64_t pde = paging::g_pd[va >> 30][(va >> 21) & 0x1FF];
+		ok = ok && (pde & 1) && (pde & (1ull << 7)) &&
+			 ((uint32_t)(pde & 0xFFE00000ull) == (va & 0xFFE00000u)); // identity
+	}
+	both("    paging=%s\n", ok ? "OK" : "FAIL");
+}
+
 } // namespace
 
 extern "C" void kernel_main(bootinfo* bi) {
@@ -155,6 +171,7 @@ extern "C" void kernel_main(bootinfo* bi) {
 	kbd::init();  // irq1 -> ring buffer
 	timer_init(); // irq0 -> ms clock
 	heap_init(bi);
+	paging::paging_init();
 	asm volatile("sti");
 
 	console::setcolor(0xCBA6F7, 0x1E1E2E);
@@ -174,6 +191,7 @@ extern "C" void kernel_main(bootinfo* bi) {
 	test_idt();
 	test_timer();
 	test_heap();
+	test_paging();
 
 	console::setcolor(0xCBA6F7, 0x1E1E2E);
 	both("\n  AURISYS: all tests passed\n");

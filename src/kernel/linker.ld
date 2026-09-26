@@ -26,6 +26,13 @@ SECTIONS
         __init_array_end = .;
     }
 
+    .paging (NOLOAD) : ALIGN(4K)
+    {
+        __paging_start = .;
+        *(.paging*)
+        __paging_end = .;
+    }
+
     .bss : ALIGN(4K)
     {
         __bss_start = .;
