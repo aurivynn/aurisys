@@ -107,6 +107,8 @@ int dispatch(regs* r) {
 		return 0;
 	}
 	case SYS_uptime:
+		if (!r->ebx)
+			return -1;
 		*(uint32_t*)r->ebx = time::ms();
 		return 0;
 	case SYS_panic:

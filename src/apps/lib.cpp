@@ -34,7 +34,11 @@ int rm(const char* path) { return (int)trp(SYS_rm, (uint32_t)(uintptr_t)path, 0,
 int getcwd(char* buf, uint32_t size) { return (int)trp(SYS_cwd, (uint32_t)(uintptr_t)buf, size, 0, 0, 0); }
 int statfs(fs_stat* out) { return (int)trp(SYS_statfs, (uint32_t)(uintptr_t)out, 0, 0, 0, 0); }
 int meminfo(mem_stat* out) { return (int)trp(SYS_meminfo, (uint32_t)(uintptr_t)out, 0, 0, 0, 0); }
-int uptime_ms() { return (int)trp(SYS_uptime, 0, 0, 0, 0, 0); }
+int uptime_ms() {
+	uint32_t ms = 0;
+	(void)trp(SYS_uptime, (uint32_t)(uintptr_t)&ms, 0, 0, 0, 0);
+	return (int)ms;
+}
 
 bool is_dot(const char* n) { return n[0] == '.' && (n[1] == 0 || (n[1] == '.' && n[2] == 0)); }
 
