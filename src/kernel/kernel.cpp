@@ -115,24 +115,24 @@ extern "C" void kernel_main(bootinfo* bi) {
 	console::init();
 	console::clear();
 
-	console::setcolor(0x00FF9C, 0x101020);
+	console::setcolor(0xCBA6F7, 0x1E1E2E);
 	console::puts("  AURISYS");
-	console::setcolor(0xE8E8E8, 0x101020);
+	console::setcolor(0xCDD6F4, 0x1E1E2E);
 	console::printf("  framebuffer %ux%u @%ubpp  LFB=%x  pitch=%u\n", bi->fb_width, bi->fb_height, bi->fb_bpp,
 					bi->fb_addr, bi->fb_pitch);
 	console::printf("  bootinfo @%p  magic=%x  (%s)\n\n", (uint32_t)bi, bi->magic,
 					bi->magic == BOOTINFO_MAGIC ? "OK" : "BAD");
 
-	console::setcolor(0x9CD8FF, 0x101020);
+	console::setcolor(0x89DCEB, 0x1E1E2E);
 	both("  kernel tests\n");
-	console::setcolor(0xE8E8E8, 0x101020);
+	console::setcolor(0xCDD6F4, 0x1E1E2E);
 	test_cpp();
 	test_mem();
 	test_e820(bi);
 
-	console::setcolor(0x00FF9C, 0x101020);
+	console::setcolor(0xCBA6F7, 0x1E1E2E);
 	both("\n  AURISYS: all tests passed\n");
-	console::setcolor(0xE8E8E8, 0x101020);
+	console::setcolor(0xCDD6F4, 0x1E1E2E);
 
 	serial::puts("\r\nAURISYS: all tests passed\r\n");
 	serial::puts("\r\nAURISYS: terminal ready\r\n");

@@ -9,8 +9,8 @@ namespace console {
 
 namespace {
 
-uint32_t g_fg = 0xE8E8E8;
-uint32_t g_bg = 0x101020;
+uint32_t g_fg = 0xCDD6F4;
+uint32_t g_bg = 0x1E1E2E;
 int g_cx = 0; // cursor in cells
 int g_cy = 0;
 
@@ -22,8 +22,8 @@ void emit(char c) { putchar(c); }
 } // namespace
 
 void init() {
-	g_fg = 0xE8E8E8;
-	g_bg = 0x101020;
+	g_fg = 0xCDD6F4;
+	g_bg = 0x1E1E2E;
 	g_cx = 0;
 	g_cy = 0;
 }

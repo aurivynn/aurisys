@@ -63,7 +63,7 @@ void cursor_paint() {
 	cursor_hide();
 	if (!g_phase)
 		return;
-	fb::fill_rect(console::cx() * 8 + 1, console::cy() * 16 + 1, 6, 14, 0x00FF9C);
+	fb::fill_rect(console::cx() * 8 + 1, console::cy() * 16 + 1, 6, 14, 0xCBA6F7);
 	g_painted = true;
 	g_px = console::cx();
 	g_py = console::cy();
@@ -129,9 +129,9 @@ void run_line(char* line) {
 }
 
 void prompt() {
-	console::setcolor(0x00FF9C, 0x101020); // green
+	console::setcolor(0xCBA6F7, 0x1E1E2E);
 	terminal::printf("aurisys> ");
-	console::setcolor(0xE8E8E8, 0x101020);
+	console::setcolor(0xCDD6F4, 0x1E1E2E);
 	cursor_paint();
 }
 
