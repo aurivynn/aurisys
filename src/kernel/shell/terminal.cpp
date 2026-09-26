@@ -2,11 +2,11 @@
 
 #include "shell/terminal.h"
 
-#include "apps/app.h"
 #include "drivers/console.h"
 #include "drivers/fb.h"
 #include "drivers/kbd.h"
 #include "drivers/serial.h"
+#include "exec.h"
 #include "fs.h"
 #include "lib/mem.h"
 #include "lib/print.h"
@@ -172,18 +172,43 @@ int tokenize(char* line, const char** argv, int argv_max) {
 	return argc;
 }
 
+// cd stays a builtin because the cwd is kernel state
+bool builtin_cd(int argc, const char** argv) {
+	if (strcmp(argv[0], "cd") != 0)
+		return false;
+	if (argc > 2) {
+		terminal::printf("usage: cd [dir]\n");
+		return true;
+	}
+	const char* where = argc == 2 ? argv[1] : "/";
+	if (!fs::chdir(where))
+		terminal::printf("cd: %s: not a directory\n", where);
+	return true;
+}
+
+bool exec_command(const char* name, int argc, const char** argv) {
+	char pp[256];
+	bool found = vfs::find_in_path(name, pp, sizeof pp);
+	if (!found && strchr(name, '/')) {
+		strncpy(pp, name, sizeof pp - 1);
+		pp[sizeof pp - 1] = 0;
+		found = true;
+	}
+	if (!found)
+		return false;
+	return exec::run(pp, argc, argv); // prints its own errors
+}
+
 void run_line(char* line) {
 	const char* argv[8];
 	const int argc = tokenize(line, argv, 8);
 	if (argc == 0)
 		return;
-	if (apps::run(argv[0], argc, argv) < 0) {
-		char pp[256];
-		if (vfs::find_in_path(argv[0], pp, sizeof pp))
-			terminal::printf("%s: found at %s, no disk exec yet (phase e)\n", argv[0], pp);
-		else
-			terminal::printf("unknown command: %s\n", argv[0]);
-	}
+	if (builtin_cd(argc, argv))
+		return;
+	if (exec_command(argv[0], argc, argv))
+		return;
+	terminal::printf("unknown command: %s\n", argv[0]);
 }
 
 void prompt() {
@@ -245,9 +270,6 @@ void complete_command(int fw) {
 		}
 		names[n++] = nm;
 	};
-	for (int i = 0; i < apps::count(); ++i)
-		consider(apps::table()[i].name);
-
 	const char* p = vfs::path();
 	while (*p) {
 		char dir[128];

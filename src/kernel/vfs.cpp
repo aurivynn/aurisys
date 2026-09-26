@@ -525,8 +525,6 @@ bool init() {
 	if (!mount(&g_devfs, "/dev"))
 		return false;
 
-	// fds 0 1 2 all sit on the console for now. phase d makes the table
-	// per process and hands fds around
 	const dev* cons = nullptr;
 	for (uint32_t i = 0; i < kDevCount; ++i)
 		if (strcmp(g_devs[i].name, "console") == 0)

@@ -41,13 +41,23 @@ LDFLAGS := -m elf_i386 -nostdlib -T src/kernel/linker.ld
 
 KERNEL_CPP := $(wildcard src/kernel/*.cpp src/kernel/*/*.cpp)
 INCLUDES := $(wildcard src/include/*.h)
-KERNEL_OBJS := $(BUILD)/entry.o $(BUILD)/font.o $(BUILD)/isr_stubs.o \
+KERNEL_OBJS := $(BUILD)/entry.o $(BUILD)/font.o $(BUILD)/isr_stubs.o $(BUILD)/syscall_stub.o \
                $(patsubst src/kernel/%.cpp,$(BUILD)/%.o,$(KERNEL_CPP))
+
+APPFLAGS := $(KFLAGS) -I src/apps
+APP_NAMES := cat df echo help hexdump ls mem mkdir panic rm uptime write
+APP_SRCS := $(addprefix src/apps/,$(addsuffix .cpp,$(APP_NAMES)))
+APP_OBJS := $(addprefix $(BUILD)/app/,$(addsuffix .o,$(APP_NAMES)))
+APP_RT_OBJS := $(BUILD)/app/rt/crt0.o $(BUILD)/app/rt/lib.o $(BUILD)/app/rt/print.o \
+               $(BUILD)/app/rt/mem.o $(BUILD)/app/rt/str.o
+APP_BINS := $(addprefix $(BUILD)/rootfs/bin/,$(APP_NAMES))
 
 COMPILE_DB_SRC := tools/gen_compile_db/main.cpp
 COMPILE_DB_BIN := $(BUILD)/gen_compile_db
 
 .PHONY: all compile-db run run-headless debug size fs-check clean
+
+.SECONDARY: $(APP_OBJS) $(APP_RT_OBJS)
 
 all: $(IMAGE) compile-db
 
@@ -60,10 +70,11 @@ $(IMAGE): $(STAGE1) $(STAGE2) $(KERNEL_HDR) $(KERNEL_BIN) $(FS_IMG)
 	printf '\000\000\000\000\203\000\000\000\000\010\000\000\000\170\000\000' | dd of=$@ bs=1 seek=446 conv=notrunc status=none
 	dd if=$(FS_IMG) of=$@ bs=512 seek=$(PART_LBA) conv=notrunc status=none
 
-$(FS_IMG): | $(BUILD)
+$(FS_IMG): $(APP_BINS) | $(BUILD)
+	rm -f $@
 	mke2fs -t ext4 -q -F -b 4096 \
 		-O ^64bit,^metadata_csum,^has_journal,^resize_inode,^orphan_file,^uninit_bg \
-		$@ 15M
+		-d $(BUILD)/rootfs $@ 15M
 
 $(BUILD):
 	@mkdir -p $(BUILD)
@@ -82,11 +93,35 @@ $(BUILD)/entry.o: src/kernel/arch/entry.asm | $(BUILD)
 $(BUILD)/isr_stubs.o: src/kernel/arch/isr.asm | $(BUILD)
 	$(NASM) $(AFLAGS) src/kernel/arch/isr.asm -o $@
 
+$(BUILD)/syscall_stub.o: src/kernel/arch/syscall.asm | $(BUILD)
+	$(NASM) $(AFLAGS) src/kernel/arch/syscall.asm -o $@
+
 $(COMPILE_DB_BIN): $(COMPILE_DB_SRC) | $(BUILD)
 	$(HOST_CXX) -std=c++17 -O2 -Wall -o $@ $<
 
 $(BUILD)/font.o: src/kernel/fonts/font.asm src/kernel/fonts/font8x16.bin | $(BUILD)
 	$(NASM) $(AFLAGS) -I src/kernel/fonts src/kernel/fonts/font.asm -o $@
+
+$(BUILD)/app/rt/%.o: src/kernel/lib/%.cpp $(INCLUDES) | $(BUILD)
+	@mkdir -p $(@D)
+	$(CXX) $(APPFLAGS) -c $< -o $@
+
+$(BUILD)/app/rt/lib.o: src/apps/lib.cpp src/apps/lib.h $(INCLUDES) | $(BUILD)
+	@mkdir -p $(@D)
+	$(CXX) $(APPFLAGS) -c $< -o $@
+
+$(BUILD)/app/rt/crt0.o: src/apps/crt0.asm | $(BUILD)
+	@mkdir -p $(@D)
+	$(NASM) $(AFLAGS) src/apps/crt0.asm -o $@
+
+$(BUILD)/app/%.o: src/apps/%.cpp src/apps/lib.h $(INCLUDES) | $(BUILD)
+	@mkdir -p $(@D)
+	$(CXX) $(APPFLAGS) -c $< -o $@
+
+$(BUILD)/rootfs/bin/%: $(BUILD)/app/%.o $(APP_RT_OBJS) src/apps/linker.ld | $(BUILD)
+	@mkdir -p $(@D)
+	$(LD) -m elf_i386 -T src/apps/linker.ld -o $@ $(APP_RT_OBJS) $<
+	@chmod +x $@
 
 $(BUILD)/%.o: src/kernel/%.cpp $(INCLUDES) | $(BUILD)
 	@mkdir -p $(@D)
