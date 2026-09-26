@@ -2,6 +2,5 @@ build/
 *.o
 *.bin
 !src/kernel/fonts/font8x16.bin
-serial.log
 compile_commands.json
 .cache

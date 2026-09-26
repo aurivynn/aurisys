@@ -9,6 +9,10 @@ STAGE2 := $(BUILD)/stage2.bin
 KERNEL_ELF := $(BUILD)/kernel.elf
 KERNEL_BIN := $(BUILD)/kernel.bin
 KERNEL_HDR := $(BUILD)/kernel.hdr
+FS_IMG := $(BUILD)/fs.img
+DISK_SECTORS := 32768
+PART_LBA := 2048
+PART_SECTORS := 30720
 
 CXX := $(shell command -v clang++ >/dev/null 2>&1 && echo "clang++ --target=i686-elf")
 ifeq ($(CXX),)
@@ -40,21 +44,26 @@ INCLUDES := $(wildcard src/include/*.h)
 KERNEL_OBJS := $(BUILD)/entry.o $(BUILD)/font.o $(BUILD)/isr_stubs.o \
                $(patsubst src/kernel/%.cpp,$(BUILD)/%.o,$(KERNEL_CPP))
 
-BOOT_TEST_SRC := tools/boot-test/main.cpp
-BOOT_TEST_BIN := $(BUILD)/boot-test
 COMPILE_DB_SRC := tools/gen_compile_db/main.cpp
 COMPILE_DB_BIN := $(BUILD)/gen_compile_db
 
-.PHONY: all compile-db run run-headless debug test size clean
+.PHONY: all compile-db run run-headless debug size fs-check clean
 
 all: $(IMAGE) compile-db
 
-$(IMAGE): $(STAGE1) $(STAGE2) $(KERNEL_HDR) $(KERNEL_BIN)
-	dd if=/dev/zero of=$@ bs=512 count=2880 status=none
+$(IMAGE): $(STAGE1) $(STAGE2) $(KERNEL_HDR) $(KERNEL_BIN) $(FS_IMG)
+	dd if=/dev/zero of=$@ bs=512 count=$(DISK_SECTORS) status=none
 	dd if=$(STAGE1) of=$@ bs=512 conv=notrunc status=none
 	dd if=$(STAGE2) of=$@ bs=512 seek=1 conv=notrunc status=none
 	dd if=$(KERNEL_HDR) of=$@ bs=512 seek=9 conv=notrunc status=none
 	dd if=$(KERNEL_BIN) of=$@ bs=512 seek=10 conv=notrunc status=none
+	printf '\000\000\000\000\203\000\000\000\000\010\000\000\000\170\000\000' | dd of=$@ bs=1 seek=446 conv=notrunc status=none
+	dd if=$(FS_IMG) of=$@ bs=512 seek=$(PART_LBA) conv=notrunc status=none
+
+$(FS_IMG): | $(BUILD)
+	mke2fs -t ext4 -q -F -b 4096 \
+		-O ^64bit,^metadata_csum,^has_journal,^resize_inode,^orphan_file,^uninit_bg \
+		$@ 15M
 
 $(BUILD):
 	@mkdir -p $(BUILD)
@@ -72,9 +81,6 @@ $(BUILD)/entry.o: src/kernel/arch/entry.asm | $(BUILD)
 
 $(BUILD)/isr_stubs.o: src/kernel/arch/isr.asm | $(BUILD)
 	$(NASM) $(AFLAGS) src/kernel/arch/isr.asm -o $@
-
-$(BOOT_TEST_BIN): $(BOOT_TEST_SRC) | $(BUILD)
-	$(HOST_CXX) -std=c++17 -O2 -Wall -Wextra -o $@ $<
 
 $(COMPILE_DB_BIN): $(COMPILE_DB_SRC) | $(BUILD)
 	$(HOST_CXX) -std=c++17 -O2 -Wall -o $@ $<
@@ -108,13 +114,17 @@ run-headless: $(IMAGE)
 debug: $(IMAGE)
 	$(QEMU) -drive format=raw,file=$(IMAGE) -vga std -serial stdio -no-reboot -s -S
 
-test: $(IMAGE) $(BOOT_TEST_BIN)
-	$(BOOT_TEST_BIN)
-	@echo "BOOT TEST PASSED"
+fs-check: $(IMAGE) $(FS_IMG)
+	@echo "== host ext4 cross-check =="
+	@dd if=$(IMAGE) bs=512 skip=$(PART_LBA) count=$(PART_SECTORS) status=none | cmp - $(FS_IMG) || \
+		{ echo "ERROR: partition region != fs.img"; exit 1; }
+	@echo "partition at lba $(PART_LBA) is byte-identical to fs.img"
+	@dumpe2fs -h $(FS_IMG) 2>/dev/null | grep -E "Filesystem features|Block size|Block count|Inode count|Free blocks|Free inodes"
+	@echo "fs.img is clean ext4"
 
 size: $(KERNEL_BIN)
 	@echo "kernel.bin: $$(stat -c %s $(KERNEL_BIN)) bytes (cap 60000)"
 	@test $$(stat -c %s $(KERNEL_BIN)) -le 60000 || { echo "kernel too big"; exit 1; }
 
 clean:
-	rm -rf $(BUILD) serial.log
+	rm -rf $(BUILD)

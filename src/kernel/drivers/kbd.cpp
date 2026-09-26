@@ -21,6 +21,14 @@ const char kScan[96] = {
 	0,	  0,   0,	0,	  0,   0,	0,	 0,	  0,   0,	0,	 0,	  0,   0,	0,	 0,
 };
 
+const char kShift[96] = {
+	0,	 0,	  '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '_', '+', 0,   0,	'Q', 'W', 'E', 'R',
+	'T', 'Y', 'U', 'I', 'O', 'P', '{', '}', 0,	 0,	  'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', ':',
+	'"', '~', 0,   '|', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', '<', '>', '?', 0,   '*', 0,	 ' ', 0,   0,
+	0,	 0,	  0,   0,	0,	 0,	  0,   0,	0,	 0,	  0,   0,	0,	 0,	  0,   0,	0,	 0,	  0,   0,
+	0,	 0,	  0,   0,	0,	 0,	  0,   0,	0,	 0,	  0,   0,	0,	 0,	  0,   0,
+};
+
 const int kBuf = 128;
 volatile uint8_t g_buf[kBuf];
 volatile int g_head = 0;
@@ -127,8 +135,8 @@ int poll() {
 	char c = kScan[sc];
 	if (!c)
 		return -2;
-	if (g_shift && c >= 'a' && c <= 'z')
-		c -= 32; // uppercase
+	if (g_shift)
+		c = kShift[sc]; // uppercase + shifted symbols
 	return c;
 }
 

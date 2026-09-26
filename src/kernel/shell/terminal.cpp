@@ -7,6 +7,7 @@
 #include "drivers/fb.h"
 #include "drivers/kbd.h"
 #include "drivers/serial.h"
+#include "fs.h"
 #include "lib/mem.h"
 #include "lib/print.h"
 #include "lib/str.h"
@@ -123,52 +124,6 @@ void hist_down() {
 	}
 }
 
-// tab completes the first word against the app registry
-void tab_complete() {
-	int tok = 0;
-	while (tok < g_n && g_line[tok] != ' ')
-		++tok;
-	if (tok == 0)
-		return;
-	if (tok < g_n && g_pos > tok)
-		return; // cursor is past the first word
-
-	const char* common = nullptr;
-	int common_len = 0;
-	int matches = 0;
-	for (int i = 0; i < apps::count(); ++i) {
-		const app& a = apps::table()[i];
-		if (strncmp(g_line, a.name, tok) != 0)
-			continue;
-		if (matches == 0) {
-			common = a.name;
-			common_len = (int)strlen(a.name);
-		} else {
-			int j = 0;
-			while (j < common_len && a.name[j] && a.name[j] == common[j])
-				++j;
-			common_len = j;
-		}
-		++matches;
-	}
-	if (matches == 0 || common_len <= tok)
-		return; // nothing (or already complete)
-
-	const char* tail = g_line + tok; // whatever came after the first word
-	char buf[kLineMax + 1];
-	int n = 0;
-	for (int i = 0; i < common_len && n < kLineMax; ++i)
-		buf[n++] = common[i];
-	while (*tail && n < kLineMax)
-		buf[n++] = *tail++;
-	buf[n] = 0;
-
-	strcpy(g_line, buf);
-	g_n = n;
-	g_pos = common_len > g_n ? g_n : common_len;
-	redraw_line();
-}
-
 // io
 // one char to serial and the screen
 void emit_both(char c) {
@@ -222,9 +177,215 @@ void run_line(char* line) {
 
 void prompt() {
 	console::setcolor(0xCBA6F7, 0x1E1E2E);
-	terminal::printf("aurisys> ");
+	terminal::printf("aurisys ");
+	console::setcolor(0xA6E3A1, 0x1E1E2E);
+	terminal::printf("%s", fs::cwd());
 	console::setcolor(0xCDD6F4, 0x1E1E2E);
+	terminal::printf("> ");
 	cursor_paint();
+}
+
+// tab completion
+void splice_word(int s, int e, const char* ins, int in_n, char suffix) {
+	char nl[kLineMax + 1];
+	int n = 0;
+	for (int i = 0; i < s && i < g_n; ++i)
+		nl[n++] = g_line[i];
+	for (int i = 0; i < in_n && n < kLineMax; ++i)
+		nl[n++] = ins[i];
+	if (suffix && n < kLineMax)
+		nl[n++] = suffix;
+	for (int i = e; i < g_n && n < kLineMax; ++i)
+		nl[n++] = g_line[i];
+	nl[n] = 0;
+	strcpy(g_line, nl);
+	g_n = n;
+	g_pos = s + in_n + (suffix ? 1 : 0);
+	redraw_line();
+}
+
+void candidates_done() {
+	emit_both('\n');
+	prompt();
+	g_line_x = console::cx();
+	g_line_y = console::cy();
+	redraw_line();
+}
+
+char g_last_tab[kLineMax + 1];
+int g_last_tab_n = -1;
+
+void complete_command(int fw) {
+	const app* names[32];
+	int n = 0;
+	int common_len = 0;
+	for (int i = 0; i < apps::count() && n < 32; ++i) {
+		const app& a = apps::table()[i];
+		if (strncmp(g_line, a.name, fw) != 0)
+			continue;
+		names[n] = &a;
+		if (n == 0)
+			common_len = (int)strlen(a.name);
+		else {
+			int j = 0;
+			while (j < common_len && a.name[j] && a.name[j] == names[0]->name[j])
+				++j;
+			common_len = j;
+		}
+		++n;
+	}
+	if (n == 0)
+		return;
+	if (common_len > fw) {
+		g_last_tab_n = -1;
+		splice_word(0, fw, names[0]->name, common_len, 0);
+		return;
+	}
+	if (n < 2)
+		return;
+	if (g_last_tab_n == fw) {
+		bool same = true;
+		for (int i = 0; same && i < fw; ++i)
+			if (g_last_tab[i] != g_line[i])
+				same = false;
+		if (same)
+			return;
+	}
+	g_last_tab_n = fw;
+	strncpy(g_last_tab, g_line, (size_t)fw);
+	g_last_tab[fw] = 0;
+	emit_both('\n');
+	for (int i = 0; i < n; ++i)
+		terminal::printf(" %s", names[i]->name);
+	candidates_done();
+}
+
+void complete_path(int s, int e) {
+	const int tlen = e - s;
+	char pref[128];
+	int pref_len = tlen;
+	int keep = 0;
+	for (int i = e - 1; i >= s; --i) {
+		if (g_line[i] == '/') {
+			keep = i - s + 1;
+			pref_len = e - (i + 1);
+			break;
+		}
+	}
+	memcpy(pref, g_line + s + keep, (size_t)pref_len);
+	pref[pref_len] = 0;
+
+	char dir[256];
+	if (keep) {
+		char tmp[256];
+		memcpy(tmp, g_line + s, (size_t)keep);
+		tmp[keep] = 0;
+		if (!fs::resolve(tmp, dir, sizeof dir))
+			return;
+	} else {
+		strncpy(dir, fs::cwd(), sizeof dir - 1);
+		dir[sizeof dir - 1] = 0;
+	}
+	uint32_t dino;
+	if (!fs::lookup(dir, &dino))
+		return;
+
+	struct pathctx {
+		const char* pref;
+		int pref_len;
+		char names[16][64];
+		uint8_t types[16];
+		int n;
+		int common_len;
+	} m = {pref, pref_len, {}, {}, 0, 0};
+	auto cb = [](const char* name, uint32_t ino, uint8_t type, void* ctx) -> bool {
+		(void)ino;
+		pathctx* pm = (pathctx*)ctx;
+		if (name[0] == '.' && (name[1] == 0 || (name[1] == '.' && name[2] == 0)))
+			return true;
+		if (strncmp(name, pm->pref, (size_t)pm->pref_len) != 0)
+			return true;
+		const int len = (int)strlen(name);
+		if (pm->n == 0)
+			pm->common_len = len;
+		else {
+			int j = 0;
+			while (j < pm->common_len && name[j] && name[j] == pm->names[0][j])
+				++j;
+			pm->common_len = j;
+		}
+		if (pm->n < 16) {
+			pm->types[pm->n] = type;
+			int c = len > 63 ? 63 : len;
+			memcpy(pm->names[pm->n], name, (size_t)c);
+			pm->names[pm->n][c] = 0;
+		}
+		++pm->n;
+		return true;
+	};
+	fs::list_dir(dino, cb, &m);
+	if (m.n == 0)
+		return;
+
+	char repl[kLineMax + 1];
+	auto build = [&](const char* name, int name_len) -> int {
+		int rn = 0;
+		for (int i = 0; i < keep && rn < kLineMax; ++i)
+			repl[rn++] = g_line[s + i];
+		for (int i = 0; i < name_len && rn < kLineMax; ++i)
+			repl[rn++] = name[i];
+		repl[rn] = 0;
+		return rn;
+	};
+
+	if (m.n == 1) {
+		const char suffix = m.types[0] == 2 ? '/' : ' ';
+		const int rn = build(m.names[0], (int)strlen(m.names[0]));
+		g_last_tab_n = -1;
+		splice_word(s, e, repl, rn, suffix);
+		return;
+	}
+	if (m.common_len > pref_len) {
+		const int rn = build(m.names[0], m.common_len);
+		g_last_tab_n = -1;
+		splice_word(s, e, repl, rn, 0);
+		return;
+	}
+	if (g_last_tab_n == pref_len) {
+		bool same = true;
+		for (int i = 0; same && i < pref_len; ++i)
+			if (g_last_tab[i] != pref[i])
+				same = false;
+		if (same)
+			return;
+	}
+	g_last_tab_n = pref_len;
+	strncpy(g_last_tab, pref, (size_t)pref_len);
+	g_last_tab[pref_len] = 0;
+	emit_both('\n');
+	for (int i = 0; i < m.n && i < 16; ++i)
+		terminal::printf(" %s%c", m.names[i], m.types[i] == 2 ? '/' : ' ');
+	candidates_done();
+}
+
+void tab_complete() {
+	int fw = 0;
+	while (fw < g_n && g_line[fw] != ' ')
+		++fw;
+	if (g_pos <= fw) {
+		complete_command(fw);
+		return;
+	}
+	int s = 0;
+	for (int i = 0; i < g_pos && i < g_n; ++i)
+		if (g_line[i] == ' ')
+			s = i + 1;
+	int e = s;
+	while (e < g_n && g_line[e] != ' ')
+		++e;
+	if (e == s)
+		return;
+	complete_path(s, e);
 }
 
 } // namespace
@@ -235,6 +396,8 @@ void printf(const char* fmt, ...) {
 	vprint(fmt, ap);
 	va_end(ap);
 }
+
+void print(const char* string) { printf(string); }
 
 void run() {
 	for (;;) {

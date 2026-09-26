@@ -4,6 +4,7 @@
 #include "arch/idt.h"
 #include "arch/paging.h"
 
+#include "drivers/ata.h"
 #include "drivers/console.h"
 #include "drivers/fb.h"
 #include "drivers/kbd.h"
@@ -14,6 +15,7 @@
 #include "lib/mem.h"
 #include "lib/print.h"
 #include "lib/time.h"
+#include "fs.h"
 #include "shell/terminal.h"
 
 #include <stdarg.h>
@@ -192,6 +194,10 @@ extern "C" void kernel_main(bootinfo* bi) {
 	test_timer();
 	test_heap();
 	test_paging();
+
+	const bool ata_ok = ata::init();
+	both("    ata=%s\n", ata_ok ? "OK" : "FAIL");
+	both("    fs=%s\n", (ata_ok && fs::mount(0)) ? "OK" : "FAIL");
 
 	console::setcolor(0xCBA6F7, 0x1E1E2E);
 	both("\n  AURISYS: all tests passed\n");

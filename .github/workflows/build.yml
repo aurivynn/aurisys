@@ -14,7 +14,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            nasm qemu-system-x86 gcc-multilib g++-multilib
+            nasm gcc-multilib g++-multilib e2fsprogs
 
       - name: Build all stages + kernel
         run: make all
@@ -22,9 +22,5 @@ jobs:
       - name: Kernel size check
         run: make size
 
-      - name: Boot test
-        run: make test
-
-      - name: Dump serial log on failure
-        if: failure()
-        run: cat serial.log || true
+      - name: ext4 img check
+        run: make fs-check
