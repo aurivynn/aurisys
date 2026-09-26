@@ -12,6 +12,7 @@
 #include "lib/print.h"
 #include "lib/str.h"
 #include "lib/time.h"
+#include "vfs.h"
 
 #include <stdarg.h>
 #include <stdint.h>
@@ -131,7 +132,12 @@ void emit_both(char c) {
 	console::putchar(c);
 }
 
-void vprint(const char* fmt, va_list ap) { print::vprintf(&emit_both, fmt, ap); }
+void fd1_put(char c) {
+	const char b = c;
+	vfs::fd_write(1, &b, 1);
+}
+
+void vprint(const char* fmt, va_list ap) { print::vprintf(fd1_put, fmt, ap); }
 
 // wait for a key (keyboard first, then serial), blinking while idle
 int read_char() {
@@ -171,8 +177,13 @@ void run_line(char* line) {
 	const int argc = tokenize(line, argv, 8);
 	if (argc == 0)
 		return;
-	if (apps::run(argv[0], argc, argv) < 0)
-		terminal::printf("unknown command: %s\n", argv[0]);
+	if (apps::run(argv[0], argc, argv) < 0) {
+		char pp[256];
+		if (vfs::find_in_path(argv[0], pp, sizeof pp))
+			terminal::printf("%s: found at %s, no disk exec yet (phase e)\n", argv[0], pp);
+		else
+			terminal::printf("unknown command: %s\n", argv[0]);
+	}
 }
 
 void prompt() {
@@ -216,29 +227,58 @@ char g_last_tab[kLineMax + 1];
 int g_last_tab_n = -1;
 
 void complete_command(int fw) {
-	const app* names[32];
+	const char* names[32];
+	char disk_names[32][64];
 	int n = 0;
 	int common_len = 0;
-	for (int i = 0; i < apps::count() && n < 32; ++i) {
-		const app& a = apps::table()[i];
-		if (strncmp(g_line, a.name, fw) != 0)
-			continue;
-		names[n] = &a;
+	auto consider = [&](const char* nm) {
+		if (strncmp(g_line, nm, (size_t)fw) != 0)
+			return;
+		const int len = (int)strlen(nm);
 		if (n == 0)
-			common_len = (int)strlen(a.name);
+			common_len = len;
 		else {
 			int j = 0;
-			while (j < common_len && a.name[j] && a.name[j] == names[0]->name[j])
+			while (j < common_len && nm[j] && nm[j] == names[0][j])
 				++j;
 			common_len = j;
 		}
-		++n;
+		names[n++] = nm;
+	};
+	for (int i = 0; i < apps::count(); ++i)
+		consider(apps::table()[i].name);
+
+	const char* p = vfs::path();
+	while (*p) {
+		char dir[128];
+		int dn = 0;
+		while (*p && *p != ':' && dn < 127)
+			dir[dn++] = *p++;
+		dir[dn] = 0;
+		if (*p == ':')
+			++p;
+		if (dn == 0)
+			continue;
+		vfs::node* dnode = vfs::resolve(dir);
+		if (!dnode)
+			continue;
+		for (uint32_t i = 0; n < 32; ++i) {
+			vfs::node out;
+			if (vfs::readdir(dnode, i, &out) < 0)
+				break;
+			if (out.name[0] == '.' && (out.name[1] == 0 || (out.name[1] == '.' && out.name[2] == 0)))
+				continue;
+			strncpy(disk_names[n], out.name, sizeof disk_names[n] - 1);
+			disk_names[n][sizeof disk_names[n] - 1] = 0;
+			consider(disk_names[n]);
+		}
 	}
+
 	if (n == 0)
 		return;
 	if (common_len > fw) {
 		g_last_tab_n = -1;
-		splice_word(0, fw, names[0]->name, common_len, 0);
+		splice_word(0, fw, names[0], common_len, 0);
 		return;
 	}
 	if (n < 2)
@@ -256,7 +296,7 @@ void complete_command(int fw) {
 	g_last_tab[fw] = 0;
 	emit_both('\n');
 	for (int i = 0; i < n; ++i)
-		terminal::printf(" %s", names[i]->name);
+		terminal::printf(" %s", names[i]);
 	candidates_done();
 }
 
@@ -286,8 +326,8 @@ void complete_path(int s, int e) {
 		strncpy(dir, fs::cwd(), sizeof dir - 1);
 		dir[sizeof dir - 1] = 0;
 	}
-	uint32_t dino;
-	if (!fs::lookup(dir, &dino))
+	vfs::node* dnode = vfs::resolve(dir);
+	if (!dnode)
 		return;
 
 	struct pathctx {
@@ -298,32 +338,30 @@ void complete_path(int s, int e) {
 		int n;
 		int common_len;
 	} m = {pref, pref_len, {}, {}, 0, 0};
-	auto cb = [](const char* name, uint32_t ino, uint8_t type, void* ctx) -> bool {
-		(void)ino;
-		pathctx* pm = (pathctx*)ctx;
+	for (uint32_t i = 0; m.n < 16; ++i) {
+		vfs::node out;
+		if (vfs::readdir(dnode, i, &out) < 0)
+			break;
+		const char* name = out.name;
 		if (name[0] == '.' && (name[1] == 0 || (name[1] == '.' && name[2] == 0)))
-			return true;
-		if (strncmp(name, pm->pref, (size_t)pm->pref_len) != 0)
-			return true;
+			continue;
+		if (strncmp(name, m.pref, (size_t)m.pref_len) != 0)
+			continue;
 		const int len = (int)strlen(name);
-		if (pm->n == 0)
-			pm->common_len = len;
+		if (m.n == 0)
+			m.common_len = len;
 		else {
 			int j = 0;
-			while (j < pm->common_len && name[j] && name[j] == pm->names[0][j])
+			while (j < m.common_len && name[j] && name[j] == m.names[0][j])
 				++j;
-			pm->common_len = j;
+			m.common_len = j;
 		}
-		if (pm->n < 16) {
-			pm->types[pm->n] = type;
-			int c = len > 63 ? 63 : len;
-			memcpy(pm->names[pm->n], name, (size_t)c);
-			pm->names[pm->n][c] = 0;
-		}
-		++pm->n;
-		return true;
-	};
-	fs::list_dir(dino, cb, &m);
+		m.types[m.n] = out.type;
+		int c = len > 63 ? 63 : len;
+		memcpy(m.names[m.n], name, (size_t)c);
+		m.names[m.n][c] = 0;
+		++m.n;
+	}
 	if (m.n == 0)
 		return;
 

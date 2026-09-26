@@ -2,6 +2,7 @@
 
 #include "fs.h"
 #include "shell/terminal.h"
+#include "vfs.h"
 
 namespace apps {
 
@@ -30,6 +31,16 @@ int write_main(int argc, const char** argv) {
 			buf[n++] = ' ';
 		for (const char* s = argv[i]; *s && n < sizeof buf; ++s)
 			buf[n++] = *s;
+	}
+	vfs::node* dev = vfs::resolve(argv[first]);
+	if (dev && dev->type == vfs::kTypeChar) {
+		if (!dev->write) {
+			terminal::printf("write: %s: not writable\n", argv[first]);
+			return 1;
+		}
+		dev->write(dev, buf, 0, n);
+		terminal::printf("wrote %u bytes to %s\n", n, argv[first]);
+		return 0;
 	}
 	if (!fs::write_file(argv[first], buf, n, flags)) {
 		terminal::printf("write: failed (exists? out of space?)\n");

@@ -1,7 +1,7 @@
 #include "apps/app.h"
 
-#include "fs.h"
 #include "shell/terminal.h"
+#include "vfs.h"
 
 namespace apps {
 
@@ -10,31 +10,29 @@ int cat_main(int argc, const char** argv) {
 		terminal::printf("usage: cat <path>\n");
 		return 1;
 	}
-	uint32_t ino;
-	if (!fs::lookup(argv[1], &ino)) {
+	vfs::node* n = vfs::resolve(argv[1]);
+	if (!n) {
 		terminal::printf("cat: %s: no such file\n", argv[1]);
 		return 1;
 	}
-	fs::stat st;
-	if (!fs::getstat(ino, &st)) {
-		terminal::printf("cat: stat failed\n");
+	if (n->type == vfs::kTypeDir) {
+		terminal::printf("cat: %s: not a regular file\n", argv[1]);
 		return 1;
 	}
-	if ((st.mode & 0xF000) != 0x8000) {
-		terminal::printf("cat: %s: not a regular file\n", argv[1]);
+	if (!n->read) {
+		terminal::printf("cat: %s: not readable\n", argv[1]);
 		return 1;
 	}
 	char buf[256];
 	uint32_t off = 0;
 	for (;;) {
-		const uint32_t n = fs::read(ino, buf, sizeof buf - 1, off);
-		if (n == 0)
+		const int r = n->read(n, buf, off, sizeof buf - 1);
+		if (r <= 0)
 			break;
-		buf[n] = 0;
+		buf[r] = 0;
 		terminal::printf("%s", buf);
-		off += n;
+		off += (uint32_t)r;
 	}
-
 	terminal::print("\n");
 	return 0;
 }

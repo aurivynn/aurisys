@@ -17,6 +17,7 @@
 #include "lib/time.h"
 #include "fs.h"
 #include "shell/terminal.h"
+#include "vfs.h"
 
 #include <stdarg.h>
 #include <stdint.h>
@@ -197,7 +198,10 @@ extern "C" void kernel_main(bootinfo* bi) {
 
 	const bool ata_ok = ata::init();
 	both("    ata=%s\n", ata_ok ? "OK" : "FAIL");
-	both("    fs=%s\n", (ata_ok && fs::mount(0)) ? "OK" : "FAIL");
+	const bool fs_ok = ata_ok && fs::mount(0);
+	both("    fs=%s\n", fs_ok ? "OK" : "FAIL");
+	const bool vfs_ok = fs_ok && vfs::init();
+	both("    vfs=%s\n", vfs_ok ? "OK" : "FAIL");
 
 	console::setcolor(0xCBA6F7, 0x1E1E2E);
 	both("\n  AURISYS: all tests passed\n");

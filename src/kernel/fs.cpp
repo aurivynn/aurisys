@@ -281,8 +281,8 @@ bool dir_add_entry(uint32_t dir_ino, const char* name, uint32_t ino, uint8_t typ
 	return write_block(g_itb + (dir_ino - 1) / g_ipb, g_b1);
 }
 
-bool commit_counts(int used_blocks, int used_inodes) {
-	if (used_blocks == 0 && used_inodes == 0)
+bool commit_counts(int used_blocks, int used_inodes, int used_dirs) {
+	if (used_blocks == 0 && used_inodes == 0 && used_dirs == 0)
 		return true;
 	uint32_t stride = r16(g_sb + 0xFE);
 	if (stride < 32)
@@ -291,10 +291,12 @@ bool commit_counts(int used_blocks, int used_inodes) {
 		return false;
 	int fb = (int)r16(g_b1 + 0x0C) - used_blocks;
 	int fi = (int)r16(g_b1 + 0x0E) - used_inodes;
-	if (fb < 0 || fi < 0)
+	int fd = (int)r16(g_b1 + 0x10) + used_dirs; // dirs count up, not down
+	if (fb < 0 || fi < 0 || fd < 0)
 		return false;
 	w16(g_b1 + 0x0C, (uint16_t)fb);
 	w16(g_b1 + 0x0E, (uint16_t)fi);
+	w16(g_b1 + 0x10, (uint16_t)fd);
 	if (!write_block(g_desc_block, g_b1))
 		return false;
 	g_free_blocks = (uint32_t)((int)g_free_blocks - used_blocks);
@@ -768,7 +770,7 @@ bool write_file(const char* path, const void* data, uint32_t len, uint32_t flags
 	if (!exists) {
 		if (!dir_add_entry(parent_ino, name, ino, 1))
 			return false;
-		return commit_counts((int)used, 1);
+		return commit_counts((int)used, 1, 0);
 	}
 	uint32_t freed = 0;
 	if (flags & kWriteTrunc) {
@@ -778,7 +780,7 @@ bool write_file(const char* path, const void* data, uint32_t len, uint32_t flags
 			freed += old_ext[i].len;
 		}
 	}
-	return commit_counts((int)used - (int)freed, 0);
+	return commit_counts((int)used - (int)freed, 0, 0);
 }
 
 bool mkdir(const char* path) {
@@ -860,7 +862,7 @@ bool mkdir(const char* path) {
 
 	if (!dir_add_entry(parent_ino, name, ino, 2))
 		return false;
-	return commit_counts(1, 1);
+	return commit_counts(1, 1, 1);
 }
 
 bool rm(const char* path) {
@@ -968,7 +970,7 @@ bool rm(const char* path) {
 	if (!write_block(g_itb + (ino - 1) / g_ipb, g_b1))
 		return false;
 
-	return commit_counts(-(int)freed, -1);
+	return commit_counts(-(int)freed, -1, is_dir ? -1 : 0);
 }
 
 } // namespace fs
