@@ -28,6 +28,12 @@ void remap() {
 	outb(0xA1, 0xFF);
 }
 
+//  Shut uyop
+void mask_all() {
+	outb(0x21, 0xFF);
+	outb(0xA1, 0xFF);
+}
+
 void unmask(int irq) {
 	if (irq < 0 || irq > 15)
 		return;

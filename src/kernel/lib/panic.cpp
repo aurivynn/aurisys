@@ -68,7 +68,7 @@ const char* fault_name(int vec) {
 
 [[noreturn]] void panic_regs(const char* why, Registers* r) {
 	asm volatile("cli");
-	pic::remap(); // mask everything again
+	pic::mask_all();
 
 	fb::clear(0x1E1E2E);
 	console::init();

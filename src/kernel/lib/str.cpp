@@ -44,6 +44,15 @@ char* strncpy(char* dst, const char* src, size_t n) {
 	return dst;
 }
 
+char* strcat(char* dst, const char* src) {
+	char* d = dst;
+	while (*d)
+		++d;
+	while ((*d++ = *src++)) {
+	}
+	return dst;
+}
+
 char* strchr(const char* s, char c) {
 	for (; *s; ++s)
 		if (*s == c)

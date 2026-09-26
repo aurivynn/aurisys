@@ -8,7 +8,6 @@ EXTERN __bss_start
 EXTERN __bss_end
 EXTERN __init_array_start
 EXTERN __init_array_end
-EXTERN g_idt_desc
 
 _start:
     cld
@@ -19,8 +18,6 @@ _start:
     rep stosb
     mov     esp, kernel_stack_top
     mov     [saved_bootinfo], ebx
-
-    lidt    [g_idt_desc]
 
     mov     esi, __init_array_start
     mov     edi, __init_array_end
