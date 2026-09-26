@@ -1,7 +1,7 @@
 // loads static elf and runs
 // apps are binaries in /bin
 // only get reached through kernel throu int 0x80 gate
-// they run on the current ring rn
+// they run on ring 3, traps switch to the tss stack
 // given fresh stack with fixed va
 
 #include "exec.h"

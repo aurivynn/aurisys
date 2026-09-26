@@ -1,6 +1,7 @@
 // kernel
 
 #include "arch/bootinfo.h"
+#include "arch/gdt.h"
 #include "arch/idt.h"
 #include "arch/paging.h"
 
@@ -115,10 +116,19 @@ void test_e820(const bootinfo* bi) {
 	}
 }
 
-// idt got filled. gate 0 + irq0 gate present, slot 48 left empty
+// idt got filled. gate 0 + irq0 gate present, slot 48 left empty, the app gate is dpl 3 so ring 3 can call it
 void test_idt() {
-	const bool ok = (g_idt[0].flags == 0x8E && g_idt[32].flags == 0x8E && g_idt[48].flags == 0);
+	const bool ok =
+		(g_idt[0].flags == 0x8E && g_idt[32].flags == 0x8E && g_idt[48].flags == 0 && g_idt[0x80].flags == 0xEE);
 	both("    idt=%s\n", ok ? "OK" : "FAIL");
+}
+
+// ring 3 plumbing
+void test_gdt() {
+	uint32_t tr;
+	asm volatile("str %0" : "=r"(tr));
+	const bool ok = (tr == kSelTss);
+	both("    gdt=%s\n", ok ? "OK" : "FAIL");
 }
 
 // the real proof is the panic app, but make sure the timer irq actually ticks.
@@ -175,6 +185,7 @@ extern "C" void kernel_main(bootinfo* bi) {
 	timer_init(); // irq0 -> ms clock
 	heap_init(bi);
 	paging::paging_init();
+	gdt_init();
 	asm volatile("sti");
 
 	console::setcolor(0xCBA6F7, 0x1E1E2E);
@@ -195,6 +206,7 @@ extern "C" void kernel_main(bootinfo* bi) {
 	test_timer();
 	test_heap();
 	test_paging();
+	test_gdt();
 
 	const bool ata_ok = ata::init();
 	both("    ata=%s\n", ata_ok ? "OK" : "FAIL");

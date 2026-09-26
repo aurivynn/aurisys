@@ -26,8 +26,9 @@ void map_app(uint32_t va, uint32_t pa) {
 	if ((va >> 21) != 512)
 		return;
 	// that slot used to be a 2m identity page at 1gb, now it is a table
-	g_pd[1][0] = ((uint64_t)(uintptr_t)g_pt_app & 0xFFFFF000ull) | 3;
-	g_pt_app[(va >> 12) & 0x1FF] = ((uint64_t)(pa & 0xFFFFF000u)) | 3;
+	// the user bit goes on each mapping so ring 3 can reach the arena
+	g_pd[1][0] = ((uint64_t)(uintptr_t)g_pt_app & 0xFFFFF000ull) | 7; // p rw u
+	g_pt_app[(va >> 12) & 0x1FF] = ((uint64_t)(pa & 0xFFFFF000u)) | 7;
 	asm volatile("invlpg (%0)" ::"r"(va & ~0xFFFu) : "memory");
 }
 

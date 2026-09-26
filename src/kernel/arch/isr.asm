@@ -95,6 +95,15 @@ isr_common_entry:
 	pop es
 	popad
 	add esp, 8 ; drop vector + err code
+	; irqs can hit a ring 3 app
+	cmp dword [esp + 4], 0x1b ; the interrupted cs
+	jne .to_kernel
+	push eax
+	mov ax, 0x23
+	mov ds, ax
+	mov es, ax
+	pop eax
+.to_kernel:
 	iret
 
 section .rodata
