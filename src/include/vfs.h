@@ -40,9 +40,22 @@ node* root();
 int readdir(node* n, uint32_t index, node* out); // out filled, 0 ok, neg end
 bool mount(node* tree, const char* at);
 
+struct ofile {
+	node n;
+	uint32_t pos;
+	uint32_t flags;
+};
+
 constexpr int kMaxFd = 16;
+constexpr uint32_t kFdAppend = 1;
+constexpr uint32_t kFdTrunc = 2;
+
+int fd_open(const char* path, uint32_t flags);
+int fd_close(int fd);
 int fd_read(int fd, void* buf, uint32_t len);
 int fd_write(int fd, const void* buf, uint32_t len);
+int lseek(int fd, int off, int whence); // 0 set, 1 cur, 2 end, new offset out
+int dup2(int old, int nw);				// point nw at old, closing nw first
 node* fd_node(int fd);
 
 const char* path();												// the PATH string, colon separated

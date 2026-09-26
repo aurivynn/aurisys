@@ -45,9 +45,7 @@ node g_devfs; // the dev tree root
 
 // ext4 backend adapter
 
-int ext_read(node* n, void* buf, uint32_t off, uint32_t len) {
-	return (int)fs::read(n->inode, buf, len, off);
-}
+int ext_read(node* n, void* buf, uint32_t off, uint32_t len) { return (int)fs::read(n->inode, buf, len, off); }
 
 node* ext_find_child(node* n, const char* name);
 
@@ -351,30 +349,114 @@ bool mount(node* tree, const char* at) {
 
 // the fd table
 
-node g_fd[kMaxFd];
+ofile g_fd[kMaxFd];
+
+int fd_open(const char* path, uint32_t flags) {
+	if (!path)
+		return -1;
+	node* r = resolve(path);
+	if (!r)
+		return -1;
+	if (r->inode && r->type == kTypeFile && (flags & kFdTrunc)) {
+		if (!fs::write_file(path, nullptr, 0, fs::kWriteTrunc))
+			return -1;
+		r->size = 0; // keep the node honest about the truncate
+	}
+	int fd = -1;
+	for (int i = 0; i < kMaxFd; ++i)
+		if (g_fd[i].n.type == 0) {
+			fd = i;
+			break;
+		}
+	if (fd < 0)
+		return -1;
+	ofile* e = &g_fd[fd];
+	memcpy(&e->n, r, sizeof e->n);
+	e->n.name = e->n.name_buf; // the copy carries its own name buffer
+	e->pos = 0;
+	e->flags = flags;
+	if ((flags & kFdAppend) && e->n.inode) {
+		fs::stat st;
+		if (fs::getstat(e->n.inode, &st))
+			e->pos = st.size; // append starts at the end
+	}
+	return fd;
+}
+
+int fd_close(int fd) {
+	if (fd < 0 || fd >= kMaxFd)
+		return -1;
+	memset(&g_fd[fd], 0, sizeof g_fd[fd]);
+	return 0;
+}
 
 int fd_read(int fd, void* buf, uint32_t len) {
 	if (fd < 0 || fd >= kMaxFd)
 		return -1;
-	node* n = &g_fd[fd];
-	if (!n->read)
+	ofile* e = &g_fd[fd];
+	if (!e->n.read)
 		return -1;
-	return n->read(n, buf, 0, len);
+	const int r = e->n.read(&e->n, buf, e->pos, len);
+	if (r > 0)
+		e->pos += (uint32_t)r;
+	return r;
 }
 
 int fd_write(int fd, const void* buf, uint32_t len) {
 	if (fd < 0 || fd >= kMaxFd)
 		return -1;
-	node* n = &g_fd[fd];
-	if (!n->write)
+	ofile* e = &g_fd[fd];
+	if (!e->n.write)
 		return -1;
-	return n->write(n, buf, 0, len);
+	// append means every write lands at the end, like O_APPEND
+	if ((e->flags & kFdAppend) && e->n.inode) {
+		fs::stat st;
+		if (fs::getstat(e->n.inode, &st))
+			e->pos = st.size;
+	}
+	const int r = e->n.write(&e->n, buf, e->pos, len);
+	if (r > 0)
+		e->pos += (uint32_t)r;
+	return r;
+}
+
+// whence 0 set, 1 cur, 2 end, returns the new offset
+int lseek(int fd, int off, int whence) {
+	if (fd < 0 || fd >= kMaxFd)
+		return -1;
+	ofile* e = &g_fd[fd];
+	if (!e->n.type)
+		return -1;
+	uint32_t base = 0;
+	if (whence == 1)
+		base = e->pos;
+	else if (whence == 2)
+		base = e->n.size;
+	else if (whence != 0)
+		return -1;
+	if (off < 0 && (uint32_t)(-off) > base)
+		return -1;
+	e->pos = base + (uint32_t)off;
+	return (int)e->pos;
+}
+
+// point one fd at the same open file, vacating the target first
+int dup2(int old, int nw) {
+	if (old < 0 || old >= kMaxFd || nw < 0 || nw >= kMaxFd)
+		return -1;
+	if (old == nw)
+		return nw;
+	if (g_fd[nw].n.type)
+		fd_close(nw);
+	memcpy(&g_fd[nw], &g_fd[old], sizeof g_fd[nw]);
+	g_fd[nw].n.name = g_fd[nw].n.name_buf;
+	return nw;
 }
 
 node* fd_node(int fd) {
 	if (fd < 0 || fd >= kMaxFd)
 		return nullptr;
-	return &g_fd[fd];
+	return &g_fd[fd].n;
 }
 
 // PATH
@@ -453,13 +535,14 @@ bool init() {
 		return false;
 	memset(g_fd, 0, sizeof g_fd);
 	for (int i = 0; i < 3; ++i) {
-		node* n = &g_fd[i];
-		n->name = n->name_buf;
-		strcpy(n->name_buf, "console");
-		n->type = kTypeChar;
-		n->read = dev_read;
-		n->write = dev_write;
-		n->internal = (void*)cons;
+		ofile* e = &g_fd[i];
+		e->n.name = e->n.name_buf;
+		strcpy(e->n.name_buf, "console");
+		e->n.type = kTypeChar;
+		e->n.read = dev_read;
+		e->n.write = dev_write;
+		e->n.internal = (void*)cons;
+		// pos and flags stay zero
 	}
 	return true;
 }
