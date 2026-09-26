@@ -281,23 +281,24 @@ bool dir_add_entry(uint32_t dir_ino, const char* name, uint32_t ino, uint8_t typ
 	return write_block(g_itb + (dir_ino - 1) / g_ipb, g_b1);
 }
 
-// drop the block/inode free counts back to the disk
-bool commit_counts(uint32_t used_blocks, uint32_t used_inodes) {
+bool commit_counts(int used_blocks, int used_inodes) {
 	if (used_blocks == 0 && used_inodes == 0)
 		return true;
-	if (used_blocks > g_free_blocks || used_inodes > g_free_inodes)
-		return false;
 	uint32_t stride = r16(g_sb + 0xFE);
 	if (stride < 32)
 		stride = 32;
 	if (!read_block(g_desc_block, g_b1))
 		return false;
-	w16(g_b1 + 0x0C, (uint16_t)(r16(g_b1 + 0x0C) - used_blocks));
-	w16(g_b1 + 0x0E, (uint16_t)(r16(g_b1 + 0x0E) - used_inodes));
+	int fb = (int)r16(g_b1 + 0x0C) - used_blocks;
+	int fi = (int)r16(g_b1 + 0x0E) - used_inodes;
+	if (fb < 0 || fi < 0)
+		return false;
+	w16(g_b1 + 0x0C, (uint16_t)fb);
+	w16(g_b1 + 0x0E, (uint16_t)fi);
 	if (!write_block(g_desc_block, g_b1))
 		return false;
-	g_free_blocks -= used_blocks;
-	g_free_inodes -= used_inodes;
+	g_free_blocks = (uint32_t)((int)g_free_blocks - used_blocks);
+	g_free_inodes = (uint32_t)((int)g_free_inodes - used_inodes);
 	w32(g_sb + 0x0C, g_free_blocks);
 	w32(g_sb + 0x10, g_free_inodes);
 	return ata::write_sectors(g_part_lba + 2, 2, g_sb);
@@ -592,8 +593,81 @@ void summary(uint32_t* block_size, uint32_t* blocks, uint32_t* free_blocks, uint
 	*feat_ro = g_mounted ? g_feat_ro : 0;
 }
 
-bool write_file(const char* path, const void* data, uint32_t len) {
+// clear n block bitmap bits starting at first
+bool free_blocks(uint32_t first, uint32_t n) {
+	if (n == 0 || first + n > g_blocks)
+		return false;
+	if (!read_block(g_bbb, g_b1))
+		return false;
+	for (uint32_t k = 0; k < n; ++k) {
+		const uint32_t bit = first + k;
+		g_b1[bit / 8] &= (uint8_t)~(1u << (bit % 8));
+	}
+	return write_block(g_bbb, g_b1);
+}
+
+uint32_t write_blocks(const void* data, uint32_t len, uint32_t lstart) {
+	const uint32_t total = (len + g_bs - 1) / g_bs;
+	uint32_t done = 0;
+	uint32_t used = 0;
+	uint32_t ext = r16(g_ino + 0x2A);
+	while (done < total) {
+		const uint32_t want = total - done;
+		const uint32_t chunk = want > 32767 ? 32767 : want;
+		// bail before allocing a thing
+		if (ext >= 4)
+			return 0;
+		uint32_t first;
+		if (!alloc_blocks(chunk, &first))
+			return 0;
+		used += chunk;
+
+		uint32_t d = done * g_bs;
+		for (uint32_t i = 0; i < chunk; ++i) {
+			memset(g_b1, 0, g_bs);
+			const uint32_t rem = len - d;
+			const uint32_t n = rem > g_bs ? g_bs : rem;
+			memcpy(g_b1, (const uint8_t*)data + d, n);
+			if (!write_block(first + i, g_b1))
+				return 0;
+			d += g_bs;
+		}
+
+		const uint32_t ee = 0x34 + ext * 12;
+		w32(g_ino + ee, lstart + done); // ee_block
+		w16(g_ino + ee + 4, (uint16_t)chunk);
+		w32(g_ino + ee + 8, first);
+		w16(g_ino + 0x2A, (uint16_t)(ext + 1));
+		++ext;
+		done += chunk;
+	}
+	return used;
+}
+
+struct ext_entry {
+	uint32_t first, len;
+};
+
+// pull the flat inline extent list out of the inode in g_ino
+bool inline_extents(ext_entry* out, uint32_t* nout) {
+	if (!(r32(g_ino + 0x20) & kExtentsFl))
+		return false;
+	const uint16_t en = r16(g_ino + 0x2A);
+	if (r16(g_ino + 0x2E) != 0 || en > 4)
+		return false;
+	for (uint16_t i = 0; i < en; ++i) {
+		const uint8_t* e = g_ino + 0x34 + i * 12;
+		out[i].first = (uint32_t)r16(e + 6) << 16 | r32(e + 8);
+		out[i].len = r16(e + 4) & 0x7FFF;
+	}
+	*nout = en;
+	return true;
+}
+
+bool write_file(const char* path, const void* data, uint32_t len, uint32_t flags) {
 	if (!g_mounted || !path || (len && !data))
+		return false;
+	if ((flags & kWriteTrunc) && (flags & kWriteAppend))
 		return false;
 
 	char abs[256];
@@ -616,67 +690,285 @@ bool write_file(const char* path, const void* data, uint32_t len) {
 		if (!ok)
 			return false;
 	}
+
+	uint32_t ino;
+	const bool exists = lookup(abs, &ino);
+	ext_entry old_ext[4];
+	uint32_t old_n = 0;
+	if (exists) {
+		// create only refuses to touch a file thats already there
+		if (!(flags & (kWriteTrunc | kWriteAppend)))
+			return false;
+		if (!load_inode(ino) || !inode_is_file())
+			return false;		 // dirs do not get overwritten
+		if (flags & kWriteTrunc) // remember the old blocks to free later
+			if (!inline_extents(old_ext, &old_n))
+				return false;
+	} else {
+		ino = alloc_inode();
+		if (ino == 0)
+			return false;
+	}
+
+	const bool append = exists && (flags & kWriteAppend);
+	if (append) {
+		// only plain extent files, same as everything we create
+		if (!(r32(g_ino + 0x20) & kExtentsFl))
+			return false;
+	} else {
+		// fresh inode image, done after any old extent scrape
+		memset(g_ino, 0, sizeof g_ino);
+		w16(g_ino, 0x81A4); // S_IFREG | 0644
+		w32(g_ino + 4, len);
+		w16(g_ino + 0x1A, 1); // links
+		w32(g_ino + 0x20, kExtentsFl);
+		w32(g_ino + 0x1C, 0); // i_blocks
+		w16(g_ino + 0x28, kExtMagic);
+		w16(g_ino + 0x2A, 0); // entries
+		w16(g_ino + 0x2C, 4); // max entries that fit i_block
+		w16(g_ino + 0x2E, 0); // depth 0
+	}
+
+	// no journal on this volume
+	const uint32_t old_size = inode_size();
+	uint32_t used = 0;
+	if (append) {
+		uint32_t d = 0;
+		const uint32_t lstart = (old_size + g_bs - 1) / g_bs;
+		if (old_size % g_bs != 0) {
+			const uint32_t inblk = old_size % g_bs;
+			const uint32_t n = (g_bs - inblk) > len ? len : (g_bs - inblk);
+			uint32_t phys;
+			if (!map_lblock(old_size / g_bs, &phys) || !read_block(phys, g_b2))
+				return false;
+			memcpy(g_b2 + inblk, data, n);
+			if (!write_block(phys, g_b2))
+				return false;
+			d = n;
+		}
+		if (d < len) {
+			used = write_blocks((const uint8_t*)data + d, len - d, lstart);
+			if (used == 0)
+				return false;
+		}
+	} else if (len) {
+		used = write_blocks(data, len, 0);
+		if (used == 0)
+			return false;
+		w32(g_ino + 0x1C, used * (g_bs >> 9)); // i_blocks
+	}
+
+	if (append) {
+		w32(g_ino + 4, old_size + len);
+		w32(g_ino + 0x1C, r32(g_ino + 0x1C) + used * (g_bs >> 9));
+	}
+	if (!store_inode(ino))
+		return false;
+
+	if (!exists) {
+		if (!dir_add_entry(parent_ino, name, ino, 1))
+			return false;
+		return commit_counts((int)used, 1);
+	}
+	uint32_t freed = 0;
+	if (flags & kWriteTrunc) {
+		for (uint32_t i = 0; i < old_n; ++i) {
+			if (!free_blocks(old_ext[i].first, old_ext[i].len))
+				return false;
+			freed += old_ext[i].len;
+		}
+	}
+	return commit_counts((int)used - (int)freed, 0);
+}
+
+bool mkdir(const char* path) {
+	if (!g_mounted || !path)
+		return false;
+	char abs[256];
+	if (!resolve(path, abs, sizeof abs))
+		return false;
+
+	char* name = abs;
+	for (char* c = abs; *c; ++c)
+		if (*c == '/')
+			name = c + 1;
+	if (*name == 0)
+		return false; // mkdir / is a no op
+
+	uint32_t parent_ino;
+	{
+		char* slash = name - 1;
+		const char saved = *slash;
+		*slash = 0;
+		const bool ok = lookup(abs, &parent_ino);
+		*slash = saved;
+		if (!ok)
+			return false;
+	}
+	struct stat st;
+	if (!getstat(parent_ino, &st) || (st.mode & 0xF000) != 0x4000)
+		return false;
 	uint32_t tmp;
 	if (lookup(abs, &tmp))
-		return false;
+		return false; // already there
 
 	uint32_t ino = alloc_inode();
 	if (ino == 0)
 		return false;
+	uint32_t phys;
+	if (!alloc_blocks(1, &phys))
+		return false;
 
 	memset(g_ino, 0, sizeof g_ino);
-	w16(g_ino, 0x81A4); // S_IFREG | 0644
-	w32(g_ino + 4, len);
-	w16(g_ino + 0x1A, 1); // links
+	w16(g_ino, 0x41ED); // S_IFDIR | 0755
+	w32(g_ino + 4, g_bs);
+	w16(g_ino + 0x1A, 2); // links, one for . and one for ..
 	w32(g_ino + 0x20, kExtentsFl);
-	w32(g_ino + 0x1C, 0); // i_blocks
+	w32(g_ino + 0x1C, g_bs >> 9);
 	w16(g_ino + 0x28, kExtMagic);
-	w16(g_ino + 0x2A, 0); // entries
-	w16(g_ino + 0x2C, 4); // max entries that fit i_block
-	w16(g_ino + 0x2E, 0); // depth 0
-
-	const uint32_t total = (len + g_bs - 1) / g_bs;
-	uint32_t done = 0;
-	uint32_t used_blocks = 0;
-	uint32_t ext = 0;
-	while (done < total) {
-		const uint32_t want = total - done;
-		const uint32_t chunk = want > 32768 ? 32768 : want;
-		uint32_t first;
-		if (!alloc_blocks(chunk, &first))
-			return false;
-		used_blocks += chunk;
-
-		uint32_t d = done * g_bs;
-		for (uint32_t i = 0; i < chunk; ++i) {
-			memset(g_b1, 0, g_bs);
-			const uint32_t rem = len - d;
-			const uint32_t n = rem > g_bs ? g_bs : rem;
-			memcpy(g_b1, (const uint8_t*)data + d, n);
-			if (!write_block(first + i, g_b1))
-				return false;
-			d += g_bs;
-		}
-
-		if (ext >= 4)
-			return false;
-		const uint32_t ee = 0x34 + ext * 12;
-		w32(g_ino + ee, done); // ee_block
-		w16(g_ino + ee + 4, (uint16_t)chunk);
-		w32(g_ino + ee + 8, first);
-		w16(g_ino + 0x2A, (uint16_t)(ext + 1));
-		++ext;
-		done += chunk;
-	}
-
-	w32(g_ino + 0x1C, used_blocks * (g_bs >> 9)); // i_blocks, 512-byte units
+	w16(g_ino + 0x2A, 1);
+	w16(g_ino + 0x2C, 4);
+	w16(g_ino + 0x2E, 0);
+	w32(g_ino + 0x34, 0);	 // ee_block 0
+	w16(g_ino + 0x38, 1);	 // ee_len
+	w32(g_ino + 0x3C, phys); // ee_start lo
 	if (!store_inode(ino))
 		return false;
 
-	if (!dir_add_entry(parent_ino, name, ino, 1))
+	// seed the dir data block with . and .., rec_len runs to end of block
+	memset(g_b2, 0, g_bs);
+	w32(g_b2, ino); // .
+	w16(g_b2 + 4, 12);
+	g_b2[6] = 1;
+	g_b2[7] = 2;
+	g_b2[8] = '.';
+	w32(g_b2 + 12, parent_ino); // ..
+	w16(g_b2 + 16, (uint16_t)(g_bs - 12));
+	g_b2[18] = 2;
+	g_b2[19] = 2;
+	g_b2[20] = '.';
+	g_b2[21] = '.';
+	if (!write_block(phys, g_b2))
 		return false;
 
-	return commit_counts(used_blocks, 1);
+	// the parent gained a subdir
+	if (!load_inode(parent_ino))
+		return false;
+	w16(g_ino + 0x1A, (uint16_t)(r16(g_ino + 0x1A) + 1));
+	if (!store_inode(parent_ino))
+		return false;
+
+	if (!dir_add_entry(parent_ino, name, ino, 2))
+		return false;
+	return commit_counts(1, 1);
+}
+
+bool rm(const char* path) {
+	if (!g_mounted || !path)
+		return false;
+	char abs[256];
+	if (!resolve(path, abs, sizeof abs))
+		return false;
+
+	char* name = abs;
+	for (char* c = abs; *c; ++c)
+		if (*c == '/')
+			name = c + 1;
+	if (*name == 0)
+		return false; // rm / is a no no
+
+	uint32_t parent_ino, ino;
+	{
+		char* slash = name - 1;
+		const char saved = *slash;
+		*slash = 0;
+		const bool ok = lookup(abs, &parent_ino);
+		*slash = saved;
+		if (!ok)
+			return false;
+	}
+	if (!lookup(abs, &ino))
+		return false;
+
+	struct stat st;
+	if (!getstat(parent_ino, &st) || (st.mode & 0xF000) != 0x4000)
+		return false;
+	if (!load_inode(ino))
+		return false;
+
+	const bool is_dir = inode_is_dir();
+	if (!is_dir && !inode_is_file())
+		return false;
+	if (is_dir) {
+		// only empty dirs go. . and .. count as 2, more means children
+		auto skip = [](const char*, uint32_t, uint8_t, void*) { return true; };
+		if (list_dir(ino, skip, nullptr) > 2)
+			return false;
+	}
+
+	if (!load_inode(parent_ino) || !inode_is_dir())
+		return false;
+	{
+		const uint32_t nblk = (inode_size() + g_bs - 1) / g_bs;
+		bool done = false;
+		for (uint32_t b = 0; b < nblk && !done; ++b) {
+			if (!load_inode(parent_ino) || !inode_is_dir())
+				return false;
+			uint32_t phys;
+			if (!map_lblock(b, &phys) || !read_block(phys, g_b2))
+				return false;
+			uint32_t off = 0, prev = 0;
+			while (off + 8 <= g_bs) {
+				const uint16_t rc = r16(g_b2 + off + 4);
+				if (rc < 8 || off + rc > g_bs)
+					return false; // malformed dir
+				if (r32(g_b2 + off) == ino) {
+					w16(g_b2 + prev + 4, (uint16_t)(r16(g_b2 + prev + 4) + rc));
+					if (!write_block(phys, g_b2))
+						return false;
+					done = true;
+					break;
+				}
+				prev = off;
+				off += rc;
+			}
+		}
+		if (!done)
+			return false;
+	}
+
+	ext_entry old[4];
+	uint32_t old_n = 0;
+	if (!load_inode(ino) || !inline_extents(old, &old_n))
+		return false;
+	uint32_t freed = 0;
+	for (uint32_t i = 0; i < old_n; ++i) {
+		if (!free_blocks(old[i].first, old[i].len))
+			return false;
+		freed += old[i].len;
+	}
+
+	if (is_dir) {
+		if (!load_inode(parent_ino))
+			return false;
+		w16(g_ino + 0x1A, (uint16_t)(r16(g_ino + 0x1A) - 1)); // lost a subdir
+		if (!store_inode(parent_ino))
+			return false;
+	}
+
+	if (!read_block(g_ibb, g_b1))
+		return false;
+	const uint32_t bit = ino - 1;
+	g_b1[bit / 8] &= (uint8_t)~(1u << (bit % 8));
+	if (!write_block(g_ibb, g_b1))
+		return false;
+	if (!read_block(g_itb + (ino - 1) / g_ipb, g_b1))
+		return false;
+	memset(g_b1 + ((ino - 1) % g_ipb) * g_inode_size, 0, g_inode_size);
+	if (!write_block(g_itb + (ino - 1) / g_ipb, g_b1))
+		return false;
+
+	return commit_counts(-(int)freed, -1);
 }
 
 } // namespace fs

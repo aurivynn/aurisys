@@ -14,14 +14,23 @@ int cat_main(int argc, const char** argv);
 int df_main(int argc, const char** argv);
 int hexdump_main(int argc, const char** argv);
 int write_main(int argc, const char** argv);
+int mkdir_main(int argc, const char** argv);
+int rm_main(int argc, const char** argv);
 
 const app kTable[] = {
-	{"help", "list the apps", help_main},	   {"echo", "print the args", echo_main},
-	{"mem", "heap usage", mem_main},		   {"uptime", "ms since boot", uptime_main},
-	{"panic", "fault on purpose", panic_main}, {"ls", "list a directory", ls_main},
-	{"cat", "print a file", cat_main},		   {"df", "filesystem summary", df_main},
-	{"hexdump", "hex + ascii dump", hexdump_main}, {"write", "create a file", write_main},
+	{"help", "list the apps", help_main},
+	{"echo", "print the args", echo_main},
+	{"mem", "heap usage", mem_main},
+	{"uptime", "ms since boot", uptime_main},
+	{"panic", "fault on purpose", panic_main},
+	{"ls", "list a directory", ls_main},
+	{"cat", "print a file", cat_main},
+	{"df", "filesystem summary", df_main},
+	{"hexdump", "hex + ascii dump", hexdump_main},
+	{"write", "create a file", write_main},
 	{"cd", "change directory", cd_main},
+	{"mkdir", "make a directory", mkdir_main},
+	{"rm", "delete a file or empty dir", rm_main},
 };
 
 const app* table() { return kTable; }

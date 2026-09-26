@@ -27,6 +27,11 @@ bool resolve(const char* path, char* buf, uint32_t bufsz); // absolute form, "/a
 void summary(uint32_t* block_size, uint32_t* blocks, uint32_t* free_blocks, uint32_t* inodes, uint32_t* free_inodes,
 			 uint32_t* feat_compat, uint32_t* feat_incompat, uint32_t* feat_ro);
 
-bool write_file(const char* path, const void* data, uint32_t len);
+constexpr uint32_t kWriteTrunc = 1;
+constexpr uint32_t kWriteAppend = 2;
+
+bool write_file(const char* path, const void* data, uint32_t len, uint32_t flags);
+bool mkdir(const char* path);
+bool rm(const char* path);
 
 } // namespace fs
