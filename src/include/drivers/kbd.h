@@ -3,7 +3,20 @@
 // ps/2 keyboard. irq1 drains scancodes into a ring buffer, poll() pops them.
 namespace kbd {
 
+enum Key : int {
+	KEY_UP = 0x101,
+	KEY_DOWN,
+	KEY_LEFT,
+	KEY_RIGHT,
+	KEY_HOME,
+	KEY_END,
+	KEY_PGUP,
+	KEY_PGDN,
+	KEY_DEL,
+	KEY_INS,
+};
+
 void init(); // installs the irq1 handler + unmask
-int poll();	 // next ascii char, or -1 if none
+int poll();	 // next key: ascii, a Key, or -1 if nothing queued
 
 } // namespace kbd

@@ -32,6 +32,17 @@ void clear(uint32_t color) {
 	}
 }
 
+void scroll_up(int px, uint32_t bg) {
+	if (px <= 0 || (uint32_t)px >= g_height)
+		return;
+	memmove((void*)g_addr, (void*)(g_addr + (uint32_t)px * g_pitch), (g_height - (uint32_t)px) * g_pitch);
+	for (uint32_t y = g_height - (uint32_t)px; y < g_height; ++y) {
+		uint32_t* row = (uint32_t*)(g_addr + y * g_pitch);
+		for (uint32_t x = 0; x < g_width; ++x)
+			row[x] = bg;
+	}
+}
+
 void fill_rect(int x, int y, int w, int h, uint32_t color) {
 	for (int yy = y; yy < y + h; ++yy) {
 		if (yy < 0 || (uint32_t)yy >= g_height)

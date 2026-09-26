@@ -39,6 +39,19 @@ void clear() {
 	g_cy = 0;
 }
 
+void gotoxy(int cell_x, int cell_y) {
+	if (cell_x < 0)
+		cell_x = 0;
+	if (cell_y < 0)
+		cell_y = 0;
+	if (cell_x >= (int)cols())
+		cell_x = (int)cols() - 1;
+	if (cell_y >= (int)rows())
+		cell_y = (int)rows() - 1;
+	g_cx = cell_x;
+	g_cy = cell_y;
+}
+
 void putchar(char c) {
 	switch (c) {
 	case '\n':
@@ -69,7 +82,8 @@ void putchar(char c) {
 	}
 	if (g_cy >= (int)rows()) {
 		g_cx = 0;
-		g_cy = 0; // wrap for now, no scroll
+		fb::scroll_up(16, g_bg);
+		g_cy = (int)rows() - 1;
 	}
 }
 

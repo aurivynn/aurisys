@@ -38,7 +38,34 @@ void irq_handler(Registers*) {
 // 0x0E backspace, 0x1C enter, 0x1D ctrl, 0x2A/0x36 shift
 bool g_shift = false;
 bool g_ctrl = false;
+bool g_ext = false;
 } // namespace
+
+int key_of(uint8_t sc) {
+	switch (sc) {
+	case 0x47:
+		return kbd::KEY_HOME;
+	case 0x48:
+		return kbd::KEY_UP;
+	case 0x49:
+		return kbd::KEY_PGUP;
+	case 0x4B:
+		return kbd::KEY_LEFT;
+	case 0x4D:
+		return kbd::KEY_RIGHT;
+	case 0x4F:
+		return kbd::KEY_END;
+	case 0x50:
+		return kbd::KEY_DOWN;
+	case 0x51:
+		return kbd::KEY_PGDN;
+	case 0x52:
+		return kbd::KEY_INS;
+	case 0x53:
+		return kbd::KEY_DEL;
+	}
+	return -2;
+}
 
 namespace kbd {
 
@@ -53,8 +80,19 @@ int poll() {
 	const uint8_t sc = g_buf[g_tail];
 	g_tail = (g_tail + 1) % kBuf;
 
-	if (sc == 0xE0)
-		return -2; // extended prefix, swallow it
+	if (sc == 0xE0) {
+		g_ext = true; // the next scancode is an extended one
+		return -2;
+	}
+	if (g_ext) {
+		g_ext = false; // consumed by this byte
+		if (sc & 0x80)
+			return -2; // extended break, swallow it
+		if (sc >= 0x47 && sc <= 0x53)
+			return key_of(sc);
+		return -2; // other extended key (ctrl_r, windows, etcc), ignore
+	}
+
 	if (sc == 0x2A || sc == 0x36)
 		g_shift = true;
 	else if (sc == 0xAA || sc == 0xB6)
@@ -75,8 +113,13 @@ int poll() {
 		return '\b';
 	if (sc == 0x1C)
 		return '\n';
+	if (sc == 0x0F)
+		return '\t';
 	if (sc == 0x2A || sc == 0x36)
 		return -2; // shift already handled
+
+	if (sc >= 0x47 && sc <= 0x53)
+		return key_of(sc);
 
 	if (sc >= 96)
 		return -2; // past the table, ignore
