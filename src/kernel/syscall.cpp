@@ -7,6 +7,7 @@
 #include "lib/panic.h"
 #include "lib/str.h"
 #include "lib/time.h"
+#include "task.h"
 #include "vfs.h"
 
 #include <stdint.h>
@@ -54,7 +55,9 @@ int dispatch(regs* r) {
 	case SYS_exit:
 		exec_back((int)r->ebx); // never returns
 	case SYS_brk:
-		return 0; // no user heap yet
+		return (int)task_brk(task::g_current, r->ebx);
+	case SYS_sbrk:
+		return (int)task_sbrk(task::g_current, (int)(int32_t)r->ebx);
 	case SYS_writefile:
 		return fs::write_file((const char*)r->ebx, (const void*)r->ecx, r->edx, r->esi) ? 0 : -1;
 	case SYS_mkdir:

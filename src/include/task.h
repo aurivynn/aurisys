@@ -31,7 +31,17 @@ struct task {
 	vfs::ofile fd[vfs::kMaxFd];
 	uint8_t nfd; // how many fds are open
 	char name[16];
+
+	uint32_t* heap_base; // first byte the process may use
+	uint32_t* heap_end;	 // one past the last, the ceiling
+	uint32_t* brk;		 // the break where the next brk() hands out from
 };
+
+constexpr uint32_t kArenaBytes = 1024u * 1024u;
+constexpr uint32_t kArenaVA = 0x40200000u;
+
+uint32_t task_brk(task* t, uint32_t addr);
+uint32_t task_sbrk(task* t, int delta);
 
 // the process table. slot 0 is never used so a null pid is impossible
 extern task g_tasks[kMaxTask];

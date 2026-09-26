@@ -25,6 +25,7 @@ constexpr uint32_t kAppBase = 0x40000000;	// fixed link va
 constexpr uint32_t kCodeBytes = 0x40000;	// the code and data arena
 constexpr uint32_t kStackBase = 0x40100000; // a fresh stack for the app
 constexpr uint32_t kStackBytes = 0x10000;
+constexpr uint32_t kArenaBase = task::kArenaVA; // where brk() grows, its own 2m slot
 
 uint8_t g_code[kCodeBytes] __attribute__((section(".paging"), aligned(4096)));
 uint8_t g_stack[kStackBytes] __attribute__((section(".paging"), aligned(4096)));
@@ -135,6 +136,16 @@ bool run(const char* path, int argc, const char** argv) {
 		const uint32_t pa = (uint32_t)(uintptr_t)&g_stack[i * 4096];
 		if (!paging::map_page(here, va, pa, true) || !paging::map_page(t->sp, va, pa, true)) {
 			terminal::printf("%s: stack too big\n", path);
+			task::destroy(t);
+			vfs::fd_close(fd);
+			return false;
+		}
+	}
+	for (uint32_t i = 0; i < task::kArenaBytes / 4096; ++i) {
+		const uint32_t va = kArenaBase + i * 4096;
+		const uint32_t pa = (uint32_t)t->heap_base + i * 4096;
+		if (!paging::map_page(t->sp, va, pa, true)) {
+			terminal::printf("%s: no arena\n", path);
 			task::destroy(t);
 			vfs::fd_close(fd);
 			return false;

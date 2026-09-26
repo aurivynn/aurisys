@@ -40,6 +40,10 @@ int uptime_ms() {
 	return (int)ms;
 }
 
+int brk(uint32_t addr) { return (int)(uint32_t)trp(SYS_brk, addr, 0, 0, 0, 0); }
+
+int sbrk(int delta) { return (int)(uint32_t)trp(SYS_sbrk, (uint32_t)(int32_t)delta, 0, 0, 0, 0); }
+
 bool is_dot(const char* n) { return n[0] == '.' && (n[1] == 0 || (n[1] == '.' && n[2] == 0)); }
 
 namespace {

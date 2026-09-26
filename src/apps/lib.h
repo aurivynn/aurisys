@@ -26,6 +26,9 @@ int getcwd(char* buf, uint32_t size);
 int statfs(fs_stat* out);
 int meminfo(mem_stat* out);
 int uptime_ms();
+
+int brk(uint32_t addr);
+int sbrk(int delta);
 int printf(const char* fmt, ...);
 bool is_dot(const char* n);
 

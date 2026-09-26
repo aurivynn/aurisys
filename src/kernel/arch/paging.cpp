@@ -11,6 +11,7 @@ namespace {
 
 uint64_t g_pd_store[4][512] __attribute__((section(".paging"), aligned(4096)));
 uint64_t g_pt_store[512] __attribute__((section(".paging"), aligned(4096)));
+uint64_t g_pt_heap[512] __attribute__((section(".paging"), aligned(4096)));
 
 space* g_current = nullptr;
 
@@ -36,13 +37,16 @@ void paging_init() {
 		g_boot.pd[i] = g_pd_store[i];
 		g_boot.pdpt[i] = ((uint64_t)(uintptr_t)g_pd_store[i] & 0xFFFFF000ull) | 3; // P | RW
 	}
-	g_boot.pt_app = g_pt_store;
+	g_boot.pt_code = g_pt_store;
+	g_boot.pt_heap = g_pt_heap;
 
 	map_range_2M(0x00000000, 0x00000000, 0x80000000); // low 2GB
 	map_range_2M(0x80000000, 0x80000000, 0x80000000); // high 2GB (framebuffer)
 
 	g_boot.pd[1][0] = ((uint64_t)(uintptr_t)g_pt_store & 0xFFFFF000ull) | 7; // P | RW | U
+	g_boot.pd[1][1] = ((uint64_t)(uintptr_t)g_pt_heap & 0xFFFFF000ull) | 7;	 // P | RW | U
 	memset(g_pt_store, 0, sizeof g_pt_store);
+	memset(g_pt_heap, 0, sizeof g_pt_heap);
 
 	uint32_t cr4;
 	asm volatile("mov %%cr4, %0" : "=r"(cr4) : : "memory");
@@ -58,8 +62,14 @@ void paging_init() {
 	asm volatile("mov %0, %%cr0" ::"r"(cr0) : "memory");
 }
 
-// the user half only lives at 0x40000000, one 2m slot worth of it
-static bool user_slot(space* s, uint32_t va) { return (va >> 21) == 512 && va < 0x40200000u; }
+// the user half is two 2m slots worth of 4k pages
+static uint64_t** user_table(space* s, uint32_t va) {
+	if (va >= 0x40000000u && va < 0x40200000u)
+		return &s->pt_code;
+	if (va >= 0x40200000u && va < 0x40400000u)
+		return &s->pt_heap;
+	return nullptr;
+}
 
 space* space_create() {
 	space* s = (space*)kframe_alloc();
@@ -72,11 +82,14 @@ space* space_create() {
 		memcpy(pd, g_boot.pd[i], 4096);
 		s->pd[i] = pd;
 	}
-	s->pt_app = (uint64_t*)kframe_alloc();
-	if (!s->pt_app)
+	s->pt_code = (uint64_t*)kframe_alloc();
+	s->pt_heap = (uint64_t*)kframe_alloc();
+	if (!s->pt_code || !s->pt_heap)
 		return nullptr;
-	memset(s->pt_app, 0, 4096);
-	s->pd[1][0] = ((uint64_t)(uintptr_t)s->pt_app & 0xFFFFF000ull) | 7; // P | RW | U
+	memset(s->pt_code, 0, 4096);
+	memset(s->pt_heap, 0, 4096);
+	s->pd[1][0] = ((uint64_t)(uintptr_t)s->pt_code & 0xFFFFF000ull) | 7; // P | RW | U
+	s->pd[1][1] = ((uint64_t)(uintptr_t)s->pt_heap & 0xFFFFF000ull) | 7; // P | RW | U
 	s->pdpt[0] = ((uint64_t)(uintptr_t)s->pd[0] & 0xFFFFF000ull) | 3;
 	s->pdpt[1] = ((uint64_t)(uintptr_t)s->pd[1] & 0xFFFFF000ull) | 3;
 	s->pdpt[2] = ((uint64_t)(uintptr_t)s->pd[2] & 0xFFFFF000ull) | 3;
@@ -86,8 +99,18 @@ space* space_create() {
 }
 
 void space_destroy(space* s) {
-	// frames come from the bump allocator so they are not handed back yet
-	(void)s;
+	if (!s || s == &g_boot)
+		return;
+
+	for (int i = 0; i < 4; ++i) {
+		kfree(s->pd[i]);
+		s->pd[i] = nullptr;
+	}
+	kfree(s->pt_code);
+	kfree(s->pt_heap);
+	s->pt_code = nullptr;
+	s->pt_heap = nullptr;
+	kfree(s);
 }
 
 void space_switch(space* s) {
@@ -102,31 +125,36 @@ space* space_current() { return g_current; }
 uint32_t space_cr3(const space* s) { return (uint32_t)(uintptr_t)s->pdpt & ~0xFFFu; }
 
 bool map_page(space* s, uint32_t va, uint32_t frame, bool user) {
-	if (!s || !user_slot(s, va))
+	uint64_t** tbl = s ? user_table(s, va) : nullptr;
+	if (!tbl)
 		return false;
+	uint64_t* pt = *tbl;
 	const uint32_t i = (va >> 12) & 0x1FF;
-	if ((s->pt_app[i] & 1) && (s->pt_app[i] & 0xFFFFF000u) == (frame & 0xFFFFF000u))
-		return true;												   // already there
-	s->pt_app[i] = (uint64_t)(frame & 0xFFFFF000u) | (user ? 7u : 3u); // u = user
+	if ((pt[i] & 1) && (pt[i] & 0xFFFFF000u) == (frame & 0xFFFFF000u))
+		return true;											// already there
+	pt[i] = (uint64_t)(frame & 0xFFFFF000u) | (user ? 7u : 3u); // u = user
 	asm volatile("invlpg (%0)" ::"r"(va & ~0xFFFu) : "memory");
 	return true;
 }
 
 bool unmap_page(space* s, uint32_t va) {
-	if (!s || !user_slot(s, va))
+	uint64_t** tbl = s ? user_table(s, va) : nullptr;
+	if (!tbl)
 		return false;
+	uint64_t* pt = *tbl;
 	const uint32_t i = (va >> 12) & 0x1FF;
-	if (!(s->pt_app[i] & 1))
+	if (!(pt[i] & 1))
 		return false;
-	s->pt_app[i] = 0;
+	pt[i] = 0;
 	asm volatile("invlpg (%0)" ::"r"(va & ~0xFFFu) : "memory");
 	return true;
 }
 
 uint32_t page_frame(space* s, uint32_t va) {
-	if (!s || !user_slot(s, va))
+	uint64_t** tbl = s ? user_table(s, va) : nullptr;
+	if (!tbl)
 		return 0;
-	const uint64_t e = s->pt_app[(va >> 12) & 0x1FF];
+	const uint64_t e = (*tbl)[(va >> 12) & 0x1FF];
 	if (!(e & 1) || (e & 0x80))
 		return 0; // not present or still a 2m page
 	return (uint32_t)(e & 0xFFFFF000u);

@@ -45,11 +45,11 @@ KERNEL_OBJS := $(BUILD)/entry.o $(BUILD)/font.o $(BUILD)/isr_stubs.o $(BUILD)/sy
                $(patsubst src/kernel/%.cpp,$(BUILD)/%.o,$(KERNEL_CPP))
 
 APPFLAGS := $(KFLAGS) -I src/apps
-APP_NAMES := cat df echo fault help hexdump ls mem mkdir panic rm uptime write
+APP_NAMES := cat df echo fault heap help hexdump ls mem mkdir panic rm uptime write
 APP_SRCS := $(addprefix src/apps/,$(addsuffix .cpp,$(APP_NAMES)))
 APP_OBJS := $(addprefix $(BUILD)/app/,$(addsuffix .o,$(APP_NAMES)))
 APP_RT_OBJS := $(BUILD)/app/rt/crt0.o $(BUILD)/app/rt/lib.o $(BUILD)/app/rt/print.o \
-               $(BUILD)/app/rt/mem.o $(BUILD)/app/rt/str.o
+               $(BUILD)/app/rt/mem.o $(BUILD)/app/rt/str.o $(BUILD)/app/rt/alloc.o
 APP_BINS := $(addprefix $(BUILD)/rootfs/bin/,$(APP_NAMES))
 
 COMPILE_DB_SRC := tools/gen_compile_db/main.cpp
@@ -107,6 +107,10 @@ $(BUILD)/app/rt/%.o: src/kernel/lib/%.cpp $(INCLUDES) | $(BUILD)
 	$(CXX) $(APPFLAGS) -c $< -o $@
 
 $(BUILD)/app/rt/lib.o: src/apps/lib.cpp src/apps/lib.h $(INCLUDES) | $(BUILD)
+	@mkdir -p $(@D)
+	$(CXX) $(APPFLAGS) -c $< -o $@
+
+$(BUILD)/app/rt/alloc.o: src/apps/alloc.cpp $(INCLUDES) | $(BUILD)
 	@mkdir -p $(@D)
 	$(CXX) $(APPFLAGS) -c $< -o $@
 

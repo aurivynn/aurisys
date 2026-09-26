@@ -15,7 +15,8 @@ enum {
 	SYS_lseek,
 	SYS_readdir,
 	SYS_exit,
-	SYS_brk,
+	SYS_brk,  // move the process break
+	SYS_sbrk, // move the break by a delta
 	SYS_writefile,
 	SYS_mkdir,
 	SYS_rm,

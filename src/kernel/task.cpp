@@ -51,11 +51,20 @@ task* create(const char* name, const char* argv0) {
 	t->sp = paging::space_create();
 	if (!t->sp)
 		return nullptr;
-	t->kstack = (uint32_t*)kframe_alloc();
+	t->kstack = (uint32_t*)kframe_alloc_n(kKernelStackBytes / 4096u);
 	if (!t->kstack) {
 		paging::space_destroy(t->sp);
 		return nullptr;
 	}
+
+	t->heap_base = (uint32_t*)kframe_alloc_n(kArenaBytes / 4096u);
+	if (!t->heap_base) {
+		kfree(t->kstack);
+		paging::space_destroy(t->sp);
+		return nullptr;
+	}
+	t->heap_end = t->heap_base + kArenaBytes / 4u;
+	t->brk = t->heap_base;
 	t->kstack = (uint32_t*)((uint32_t)t->kstack + kKernelStackBytes);
 	t->pid = (uint32_t)(slot); // pid follows the slot until the table grows
 	t->ppid = g_current ? g_current->pid : 0;
@@ -75,7 +84,41 @@ void destroy(task* t) {
 		return;
 	paging::space_destroy(t->sp);
 	t->sp = nullptr;
+
+	if (t->kstack) {
+		kfree((void*)((uint32_t)t->kstack - kKernelStackBytes));
+		t->kstack = nullptr;
+	}
+
+	kframe_free(t->heap_base);
+	t->heap_base = nullptr;
+	t->heap_end = nullptr;
+	t->brk = nullptr;
 	t->state = kFree;
+}
+
+static inline uint32_t to_va(task* t, uint32_t kaddr) { return kArenaVA + (kaddr - (uint32_t)t->heap_base); }
+
+uint32_t task_brk(task* t, uint32_t addr) {
+	if (!t || !t->brk)
+		return 0;
+	if (addr == 0)
+		return to_va(t, (uint32_t)t->brk); // the plain query
+
+	if (addr < kArenaVA || addr > kArenaVA + kArenaBytes)
+		return 0;
+	t->brk = (uint32_t*)((uint32_t)t->heap_base + (addr - kArenaVA));
+	return addr;
+}
+
+uint32_t task_sbrk(task* t, int delta) {
+	if (!t || !t->brk)
+		return 0;
+	const int64_t next = (int64_t)(uint32_t)t->brk + delta;
+	if (next < (int64_t)(uint32_t)t->heap_base || next > (int64_t)(uint32_t)t->heap_end)
+		return 0;
+	t->brk = (uint32_t*)next;
+	return to_va(t, (uint32_t)t->brk);
 }
 
 task* init() {

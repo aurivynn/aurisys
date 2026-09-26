@@ -9,7 +9,8 @@ namespace paging {
 struct space {
 	uint64_t pdpt[4];  // pdpt[0..3] point at pd[0..3]
 	uint64_t* pd[4];   // 512 2m pages each
-	uint64_t* pt_app;  // 4k pages for the user arena at 0x40000000
+	uint64_t* pt_code; // 4k pages for code and stack, the 2m slot at 0x40000000
+	uint64_t* pt_heap; // 4k pages for the process arena, the slot at 0x40200000
 	uint32_t refcount; // shared until later
 };
 

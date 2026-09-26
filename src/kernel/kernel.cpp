@@ -143,15 +143,136 @@ void test_timer() {
 }
 
 void test_heap() {
+	bool ok = true;
+	size_t total0, used0, big0;
+	heap_stats(&total0, &used0, &big0);
+
 	uint32_t* a = (uint32_t*)kmalloc(64);
 	uint32_t* b = (uint32_t*)kmalloc(32);
-	a[15] = 0xCAFEBABEu;
-	b[7] = 0xDEADBEEFu;
-	bool ok = (a && b && a[15] == 0xCAFEBABEu && b[7] == 0xDEADBEEFu && (uint32_t)a != (uint32_t)b);
+	ok = ok && a && b && (uint32_t)a != (uint32_t)b;
+	if (a)
+		a[15] = 0xCAFEBABEu;
+	if (b)
+		b[7] = 0xDEADBEEFu;
+	ok = ok && a && b && a[15] == 0xCAFEBABEu && b[7] == 0xDEADBEEFu;
+
+	size_t total1, used1, big1;
+	heap_stats(&total1, &used1, &big1);
+	ok = ok && used1 >= used0 + 96 && total1 == total0;
+
 	kfree(a);
 	kfree(b);
+	size_t total2, used2, big2;
+	heap_stats(&total2, &used2, &big2);
+	ok = ok && used2 < used1;
+	ok = ok && big2 > big1;
+
+	void* again = kmalloc(64);
+	ok = ok && again != nullptr;
+	kfree(again);
+
+	uint8_t* z = (uint8_t*)kcalloc(16, 8);
+	ok = ok && z;
+	if (z) {
+		bool zeroed = true;
+		for (int i = 0; i < 128; ++i)
+			if (z[i])
+				zeroed = false;
+		ok = ok && zeroed;
+		z[0] = 0x11;
+		z[127] = 0x22;
+	}
+	uint8_t* g = (uint8_t*)krealloc(z, 4096);
+	ok = ok && g && g[0] == 0x11 && g[127] == 0x22;
+	kfree(g);
+
+	// frames have to come back 4k aligned
+	bool frames_ok = true;
+	void* fr[8];
+	for (int i = 0; i < 8; ++i) {
+		fr[i] = kframe_alloc();
+		if (!fr[i] || ((uint32_t)fr[i] & 0xFFFu) != 0)
+			frames_ok = false;
+	}
+	for (int i = 0; i < 8; ++i)
+		if (fr[i])
+			frames_ok = frames_ok && ((uint32_t)fr[i] & 0xFFFu) == 0;
+	ok = ok && frames_ok;
+	for (int i = 0; i < 8; ++i)
+		kfree(fr[i]);
+
+	uint8_t* big = (uint8_t*)kframe_alloc_n(4);
+	ok = ok && big && ((uint32_t)big & 0xFFFu) == 0;
+	if (big) {
+		for (int i = 0; i < 4; ++i) {
+			big[i * 4096] = (uint8_t)(i + 1);
+			ok = ok && big[i * 4096] == (uint8_t)(i + 1);
+		}
+		kframe_free(big);
+	}
+
+	size_t total3, used3, big3;
+	heap_stats(&total3, &used3, &big3);
+	ok = ok && total3 == total0;
+	ok = ok && big3 >= big0; // nothing stranded
+
 	ok = ok && kmalloc(0) != nullptr;
 	both("    heap=%s\n", ok ? "OK" : "FAIL");
+}
+
+void test_arena() {
+	// Ok ok ok ok ok ok
+	bool ok = true;
+	size_t used0, big0;
+	heap_stats(nullptr, &used0, &big0);
+
+	task::task* a = task::create("arena_a", "arena_a");
+	task::task* b = task::create("arena_b", "arena_b");
+	ok = ok && a && b;
+	if (!a || !b) {
+		both("    arena=%s\n", ok ? "OK" : "FAIL");
+		return;
+	}
+
+	const uint32_t base_a = (uint32_t)a->heap_base;
+	const uint32_t base_b = (uint32_t)b->heap_base;
+	ok = ok && a->brk == a->heap_base;
+	ok = ok && (uint32_t)a->heap_end - base_a == task::kArenaBytes;
+	ok = ok && (uint32_t)b->heap_end - base_b == task::kArenaBytes;
+
+	ok = ok && (base_a & 0xFFFu) == 0 && (base_b & 0xFFFu) == 0;
+
+	ok = ok && base_a != base_b;
+
+	ok = ok && task_brk(a, 0) == task::kArenaVA;
+	ok = ok && task_brk(a, task::kArenaVA + 4096u) == task::kArenaVA + 4096u;
+	ok = ok && (uint32_t)a->brk == base_a + 4096u;
+	ok = ok && (uint32_t)b->brk == base_b; // and it left the other one alone
+
+	ok = ok && task_brk(a, task::kArenaVA + task::kArenaBytes) == task::kArenaVA + task::kArenaBytes;
+	ok = ok && (uint32_t)a->brk == (uint32_t)a->heap_end;
+	ok = ok && task_brk(a, task::kArenaVA + task::kArenaBytes + 1u) == 0;
+	ok = ok && task_brk(a, 0x1000u) == 0;				  // nor is anything below the arena
+	ok = ok && (uint32_t)a->brk == (uint32_t)a->heap_end; // refusals change nothing
+
+	ok = ok && task_brk(a, task::kArenaVA) == task::kArenaVA;
+	ok = ok && a->brk == a->heap_base;
+	ok = ok && task_sbrk(a, 64) == task::kArenaVA + 64u;
+	ok = ok && task_sbrk(a, -64) == task::kArenaVA;
+
+	// a delta that walks off either end is refused, not clamped
+	ok = ok && task_sbrk(a, (int)task::kArenaBytes + 1) == 0;
+	ok = ok && task_sbrk(a, -1) == 0;
+	ok = ok && a->brk == a->heap_base;
+
+	task::destroy(a);
+	task::destroy(b);
+	size_t used1, big1;
+	heap_stats(nullptr, &used1, &big1);
+	ok = ok && used1 <= used0 + task::kArenaBytes;
+	ok = ok && big1 >= big0; // nothing stranded
+
+	both("    arena=%s\n", ok ? "OK" : "FAIL");
 }
 
 void test_paging() {
@@ -222,6 +343,7 @@ extern "C" void kernel_main(bootinfo* bi) {
 	const bool ata_ok = ata::init();
 	both("    ata=%s\n", ata_ok ? "OK" : "FAIL");
 	task::init();
+	test_arena();
 	const bool fs_ok = ata_ok && fs::mount(0);
 	both("    fs=%s\n", fs_ok ? "OK" : "FAIL");
 	const bool vfs_ok = fs_ok && vfs::init();
