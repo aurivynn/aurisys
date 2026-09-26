@@ -40,6 +40,13 @@ void* kmalloc(size_t size) {
 	return p;
 }
 
+void* kframe_alloc() {
+	void* p = kmalloc(4096u + 4095u);
+	if (!p)
+		return nullptr;
+	return (void*)(((uint32_t)p + 4095u) & ~4095u);
+}
+
 void kfree(void*) {
 	// bump allocator, no reuse yet
 }

@@ -68,6 +68,14 @@ exec_back:
     mov esp, [g_exec_ctx_esp]
     jmp [g_exec_ctx_ret]
 
+GLOBAL task_exit_to_shell
+task_exit_to_shell:
+    mov ax, 0x10
+    mov ds, ax
+    mov es, ax
+    mov esp, [g_exec_ctx_esp]
+    jmp [g_exec_ctx_ret]
+
 SECTION .data
 align 4
 GLOBAL g_exec_ctx_esp

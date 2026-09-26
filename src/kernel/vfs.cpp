@@ -9,6 +9,7 @@
 #include "fs.h"
 #include "lib/mem.h"
 #include "lib/str.h"
+#include "task.h"
 
 #include <stdint.h>
 
@@ -16,9 +17,8 @@ namespace vfs {
 
 namespace {
 
-// pool of transient nodes. the root, devfs and the devices are separate
-// statics so they never get recycled. resolve hands out pool nodes and
-// callers use them right away, fine while we are single threaded
+// pool of transient nodes. the root, devfs and the devices are separate statics so they never get recycled. resolve
+// hands out pool nodes and callers use them right away, fine while we are single threaded
 constexpr int kPool = 40;
 node g_pool[kPool];
 int g_head = 0;
@@ -30,9 +30,8 @@ node* pool_fresh() {
 	return &g_pool[s];
 }
 
-// mounts keyed by inode, not by node pointer: the pool recycles slots so
-// a mount held on a single node would go stale. resolve reattaches the
-// tree when a path walks through the matching inode
+// mounts keyed by inode, not by node pointer: the pool recycles slots so a mount held on a single node would go stale.
+// resolve reattaches the tree when a path walks through the matching inode
 struct mnt {
 	uint32_t ino;
 	node* tree;
@@ -347,11 +346,13 @@ bool mount(node* tree, const char* at) {
 	return true;
 }
 
-// the fd table
-
-ofile g_fd[kMaxFd];
+// the fd table. it lives in the process now, so two processes can have fd 3 open on different files at the same time
+static ofile* fds() { return task::g_current ? task::g_current->fd : nullptr; }
 
 int fd_open(const char* path, uint32_t flags) {
+	ofile* g_fd = fds();
+	if (!g_fd)
+		return -1;
 	if (!path)
 		return -1;
 	node* r = resolve(path);
@@ -384,6 +385,9 @@ int fd_open(const char* path, uint32_t flags) {
 }
 
 int fd_close(int fd) {
+	ofile* g_fd = fds();
+	if (!g_fd)
+		return -1;
 	if (fd < 0 || fd >= kMaxFd)
 		return -1;
 	memset(&g_fd[fd], 0, sizeof g_fd[fd]);
@@ -391,6 +395,9 @@ int fd_close(int fd) {
 }
 
 int fd_read(int fd, void* buf, uint32_t len) {
+	ofile* g_fd = fds();
+	if (!g_fd)
+		return -1;
 	if (fd < 0 || fd >= kMaxFd)
 		return -1;
 	ofile* e = &g_fd[fd];
@@ -403,6 +410,9 @@ int fd_read(int fd, void* buf, uint32_t len) {
 }
 
 int fd_write(int fd, const void* buf, uint32_t len) {
+	ofile* g_fd = fds();
+	if (!g_fd)
+		return -1;
 	if (fd < 0 || fd >= kMaxFd)
 		return -1;
 	ofile* e = &g_fd[fd];
@@ -422,6 +432,9 @@ int fd_write(int fd, const void* buf, uint32_t len) {
 
 // whence 0 set, 1 cur, 2 end, returns the new offset
 int lseek(int fd, int off, int whence) {
+	ofile* g_fd = fds();
+	if (!g_fd)
+		return -1;
 	if (fd < 0 || fd >= kMaxFd)
 		return -1;
 	ofile* e = &g_fd[fd];
@@ -442,6 +455,9 @@ int lseek(int fd, int off, int whence) {
 
 // point one fd at the same open file, vacating the target first
 int dup2(int old, int nw) {
+	ofile* g_fd = fds();
+	if (!g_fd)
+		return -1;
 	if (old < 0 || old >= kMaxFd || nw < 0 || nw >= kMaxFd)
 		return -1;
 	if (old == nw)
@@ -454,6 +470,9 @@ int dup2(int old, int nw) {
 }
 
 node* fd_node(int fd) {
+	ofile* g_fd = fds();
+	if (!g_fd)
+		return nullptr;
 	if (fd < 0 || fd >= kMaxFd)
 		return nullptr;
 	return &g_fd[fd].n;
@@ -531,7 +550,10 @@ bool init() {
 			cons = &g_devs[i];
 	if (!cons)
 		return false;
-	memset(g_fd, 0, sizeof g_fd);
+	ofile* g_fd = fds();
+	if (!g_fd)
+		return false;
+	memset(g_fd, 0, sizeof g_fd[0] * 3);
 	for (int i = 0; i < 3; ++i) {
 		ofile* e = &g_fd[i];
 		e->n.name = e->n.name_buf;

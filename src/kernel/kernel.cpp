@@ -18,6 +18,7 @@
 #include "lib/time.h"
 #include "fs.h"
 #include "shell/terminal.h"
+#include "task.h"
 #include "vfs.h"
 
 #include <stdarg.h>
@@ -154,16 +155,26 @@ void test_heap() {
 }
 
 void test_paging() {
-	bool ok = true;
+	paging::space* s = paging::space_current();
+	bool ok = (s == &paging::g_boot);
 	uint32_t cr3;
 	asm volatile("mov %%cr3, %0" : "=r"(cr3));
-	ok = ok && (cr3 == (uint32_t)(uintptr_t)paging::g_pdpt);
+	ok = ok && s && (cr3 == paging::space_cr3(s));
+	uint32_t cr0;
+	asm volatile("mov %%cr0, %0" : "=r"(cr0));
+	ok = ok && (cr0 & (1u << 31)) != 0;
 
 	const uint32_t vaddrs[] = {0x00000000u, 0x00100000u, 0x07FE0000u, 0x80000000u, 0xFD000000u, 0xFFFFFFFFu};
 	for (uint32_t va : vaddrs) {
-		const uint64_t pde = paging::g_pd[va >> 30][(va >> 21) & 0x1FF];
+		const uint64_t pde = s->pd[va >> 30][(va >> 21) & 0x1FF];
 		ok = ok && (pde & 1) && (pde & (1ull << 7)) &&
 			 ((uint32_t)(pde & 0xFFE00000ull) == (va & 0xFFE00000u)); // identity
+	}
+	paging::space* other = paging::space_create();
+	if (other) {
+		ok = ok && other != s && (uint32_t)(uintptr_t)other->pd[0] != (uint32_t)(uintptr_t)s->pd[0];
+		ok = ok && other->pd[2][0] == s->pd[2][0]; // high 2gb still identity
+		paging::space_destroy(other);
 	}
 	both("    paging=%s\n", ok ? "OK" : "FAIL");
 }
@@ -210,6 +221,7 @@ extern "C" void kernel_main(bootinfo* bi) {
 
 	const bool ata_ok = ata::init();
 	both("    ata=%s\n", ata_ok ? "OK" : "FAIL");
+	task::init();
 	const bool fs_ok = ata_ok && fs::mount(0);
 	both("    fs=%s\n", fs_ok ? "OK" : "FAIL");
 	const bool vfs_ok = fs_ok && vfs::init();

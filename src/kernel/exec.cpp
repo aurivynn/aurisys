@@ -10,6 +10,7 @@
 #include "lib/mem.h"
 #include "lib/str.h"
 #include "shell/terminal.h"
+#include "task.h"
 #include "vfs.h"
 
 #include <stdint.h>
@@ -110,12 +111,36 @@ bool run(const char* path, int argc, const char** argv) {
 		vfs::fd_close(fd);
 		return false;
 	}
-	// a fresh page table for the arena
-	paging::app_unmap();
-	for (uint32_t i = 0; i < kCodeBytes / 4096; ++i)
-		paging::map_app(kAppBase + i * 4096, (uint32_t)(uintptr_t)&g_code[i * 4096]);
-	for (uint32_t i = 0; i < kStackBytes / 4096; ++i)
-		paging::map_app(kStackBase + i * 4096, (uint32_t)(uintptr_t)&g_stack[i * 4096]);
+	task::task* t = task::create(path, argc > 0 ? argv[0] : path);
+	if (!t) {
+		terminal::printf("%s: no room for a process\n", path);
+		vfs::fd_close(fd);
+		return false;
+	}
+
+	task::task* keep = task::g_current;
+	paging::space* here = keep ? keep->sp : &paging::g_boot;
+	for (uint32_t i = 0; i < kCodeBytes / 4096; ++i) {
+		const uint32_t va = kAppBase + i * 4096;
+		const uint32_t pa = (uint32_t)(uintptr_t)&g_code[i * 4096];
+		if (!paging::map_page(here, va, pa, true) || !paging::map_page(t->sp, va, pa, true)) {
+			terminal::printf("%s: program too big\n", path);
+			task::destroy(t);
+			vfs::fd_close(fd);
+			return false;
+		}
+	}
+	for (uint32_t i = 0; i < kStackBytes / 4096; ++i) {
+		const uint32_t va = kStackBase + i * 4096;
+		const uint32_t pa = (uint32_t)(uintptr_t)&g_stack[i * 4096];
+		if (!paging::map_page(here, va, pa, true) || !paging::map_page(t->sp, va, pa, true)) {
+			terminal::printf("%s: stack too big\n", path);
+			task::destroy(t);
+			vfs::fd_close(fd);
+			return false;
+		}
+	}
+
 	memset((void*)kAppBase, 0, kCodeBytes);
 	// load every segment as the bss tail is inside the memset above
 	for (uint32_t i = 0; i < eh.phnum; ++i) {
@@ -123,12 +148,14 @@ bool run(const char* path, int argc, const char** argv) {
 			continue;
 		if (ph[i].vaddr < kAppBase || ph[i].vaddr + ph[i].memsz > kAppBase + kCodeBytes) {
 			terminal::printf("%s: program too big\n", path);
+			task::destroy(t);
 			vfs::fd_close(fd);
 			return false;
 		}
 		vfs::lseek(fd, (int)ph[i].offset, 0);
 		if (vfs::fd_read(fd, (void*)ph[i].vaddr, ph[i].filesz) != (int)ph[i].filesz) {
 			terminal::printf("%s: short read\n", path);
+			task::destroy(t);
 			vfs::fd_close(fd);
 			return false;
 		}
@@ -137,12 +164,19 @@ bool run(const char* path, int argc, const char** argv) {
 	const uint32_t esp = build_stack(argc, argv);
 	if (esp == 0) {
 		terminal::printf("%s: arg list too big\n", path);
+		task::destroy(t);
 		return false;
 	}
-	paging::app_flush();
+	// become the app, and become the shell again on the way out
+	t->state = task::kRunning;
+	task::g_current = t;
+	paging::space_switch(t->sp);
 	jump_to_app(eh.entry, esp);
 	asm volatile("sti");
-	paging::app_unmap();
+	// the app is gone or it faulted, either way it never comes back here
+	paging::space_switch(keep->sp);
+	task::g_current = keep;
+	task::destroy(t);
 	return true;
 }
 

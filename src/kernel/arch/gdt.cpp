@@ -1,6 +1,4 @@
 // the boot gdt is just null + kernel code/data
-// phase c grows user segments and a tss so apps run on ring 3 and the int 0x80 gate has a kernel stack to jump to on
-// traps
 
 #include "arch/gdt.h"
 
