@@ -1,12 +1,18 @@
 // kernel
 
 #include "arch/bootinfo.h"
+#include "arch/idt.h"
 
 #include "drivers/console.h"
 #include "drivers/fb.h"
+#include "drivers/kbd.h"
+#include "drivers/pic.h"
 #include "drivers/serial.h"
+#include "drivers/timer.h"
+#include "lib/heap.h"
 #include "lib/mem.h"
 #include "lib/print.h"
+#include "lib/time.h"
 #include "shell/terminal.h"
 
 #include <stdarg.h>
@@ -105,6 +111,34 @@ void test_e820(const bootinfo* bi) {
 	}
 }
 
+// idt got filled. gate 0 + irq0 gate present, slot 48 left empty
+void test_idt() {
+	const bool ok = (g_idt[0].flags == 0x8E && g_idt[32].flags == 0x8E && g_idt[48].flags == 0);
+	both("    idt=%s\n", ok ? "OK" : "FAIL");
+}
+
+// the real proof is the panic app, but make sure the timer irq actually ticks.
+void test_timer() {
+	const uint32_t t0 = time::ms();
+	while (time::ms() - t0 < 20) {
+		// wait 20ms
+	}
+	const bool ok = (time::ms() - t0 >= 20);
+	both("    timer=%s\n", ok ? "OK" : "FAIL");
+}
+
+void test_heap() {
+	uint32_t* a = (uint32_t*)kmalloc(64);
+	uint32_t* b = (uint32_t*)kmalloc(32);
+	a[15] = 0xCAFEBABEu;
+	b[7] = 0xDEADBEEFu;
+	bool ok = (a && b && a[15] == 0xCAFEBABEu && b[7] == 0xDEADBEEFu && (uint32_t)a != (uint32_t)b);
+	kfree(a);
+	kfree(b);
+	ok = ok && kmalloc(0) != nullptr;
+	both("    heap=%s\n", ok ? "OK" : "FAIL");
+}
+
 } // namespace
 
 extern "C" void kernel_main(bootinfo* bi) {
@@ -114,6 +148,14 @@ extern "C" void kernel_main(bootinfo* bi) {
 	fb::init(bi->fb_addr, bi->fb_pitch, bi->fb_width, bi->fb_height);
 	console::init();
 	console::clear();
+
+	// interrupt plumbing
+	idt_init();
+	pic::remap();
+	kbd::init();  // irq1 -> ring buffer
+	timer_init(); // irq0 -> ms clock
+	heap_init(bi);
+	asm volatile("sti");
 
 	console::setcolor(0xCBA6F7, 0x1E1E2E);
 	console::puts("  AURISYS");
@@ -129,6 +171,9 @@ extern "C" void kernel_main(bootinfo* bi) {
 	test_cpp();
 	test_mem();
 	test_e820(bi);
+	test_idt();
+	test_timer();
+	test_heap();
 
 	console::setcolor(0xCBA6F7, 0x1E1E2E);
 	both("\n  AURISYS: all tests passed\n");

@@ -33,6 +33,7 @@ SECTIONS
         *(.bss*)
         . = ALIGN(16);
         __bss_end = .;
+        __kernel_end = .;
     }
 
     /DISCARD/ :

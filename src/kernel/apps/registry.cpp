@@ -3,13 +3,16 @@
 
 namespace apps {
 
-// declared in apps/help.cpp and apps/echo.cpp
 int help_main(int argc, const char** argv);
 int echo_main(int argc, const char** argv);
+int mem_main(int argc, const char** argv);
+int uptime_main(int argc, const char** argv);
+int panic_main(int argc, const char** argv);
 
 const app kTable[] = {
-	{"help", "list the apps", help_main},
-	{"echo", "print the args", echo_main},
+	{"help", "list the apps", help_main},	   {"echo", "print the args", echo_main},
+	{"mem", "heap usage", mem_main},		   {"uptime", "ms since boot", uptime_main},
+	{"panic", "fault on purpose", panic_main},
 };
 
 const app* table() { return kTable; }

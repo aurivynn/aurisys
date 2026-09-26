@@ -1,5 +1,8 @@
 #include "drivers/kbd.h"
 
+#include "arch/isr.h"
+#include "drivers/pic.h"
+
 #include <stdint.h>
 
 namespace {
@@ -11,13 +14,26 @@ inline uint8_t inb(uint16_t port) {
 
 // scancode set 1 -> ascii. 0 = key we ignore.
 const char kScan[96] = {
-	0, 0, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', 0, 0,
-	'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', 0, 0, 'a', 's',
-	'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', '\'', '`', 0, '\\', 'z', 'x', 'c', 'v',
-	'b', 'n', 'm', ',', '.', '/', 0, '*', 0, ' ', 0, 0, 0, 0, 0, 0,
-	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	0,	  0,   '1', '2',  '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', 0,	 0,	  'q', 'w', 'e', 'r',
+	't',  'y', 'u', 'i',  'o', 'p', '[', ']', 0,   0,	'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', ';',
+	'\'', '`', 0,	'\\', 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '/', 0,	 '*', 0,   ' ', 0,	 0,
+	0,	  0,   0,	0,	  0,   0,	0,	 0,	  0,   0,	0,	 0,	  0,   0,	0,	 0,	  0,   0,	0,	 0,
+	0,	  0,   0,	0,	  0,   0,	0,	 0,	  0,   0,	0,	 0,	  0,   0,	0,	 0,
 };
+
+const int kBuf = 128;
+volatile uint8_t g_buf[kBuf];
+volatile int g_head = 0;
+volatile int g_tail = 0;
+
+void irq_handler(Registers*) {
+	const uint8_t sc = inb(0x60);
+	const int next = (g_head + 1) % kBuf;
+	if (next != g_tail) { // not full
+		g_buf[g_head] = sc;
+		g_head = next;
+	}
+}
 
 // 0x0E backspace, 0x1C enter, 0x1D ctrl, 0x2A/0x36 shift
 bool g_shift = false;
@@ -26,10 +42,16 @@ bool g_ctrl = false;
 
 namespace kbd {
 
+void init() {
+	irq_install(1, irq_handler);
+	pic::unmask(1);
+}
+
 int poll() {
-	if ((inb(0x64) & 1) == 0)
-		return -1; // no data
-	uint8_t sc = inb(0x60);
+	if (g_head == g_tail)
+		return -1; // nothing queued
+	const uint8_t sc = g_buf[g_tail];
+	g_tail = (g_tail + 1) % kBuf;
 
 	if (sc == 0xE0)
 		return -2; // extended prefix, swallow it

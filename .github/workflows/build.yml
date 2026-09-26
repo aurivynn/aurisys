@@ -19,7 +19,10 @@ jobs:
       - name: Build all stages + kernel
         run: make all
 
-      - name: Boot test (serial log checked)
+      - name: Kernel size check
+        run: make size
+
+      - name: Boot test
         run: make test
 
       - name: Dump serial log on failure

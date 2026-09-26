@@ -8,6 +8,7 @@
 #include "drivers/kbd.h"
 #include "drivers/serial.h"
 #include "lib/print.h"
+#include "lib/time.h"
 
 #include <stdarg.h>
 #include <stdint.h>
@@ -17,36 +18,6 @@ namespace terminal {
 namespace {
 
 const int kLineMax = 127; // +1 for the NUL
-
-inline void outb(uint16_t port, uint8_t val) { asm volatile("outb %0, %1" : : "a"(val), "Nd"(port)); }
-
-inline uint8_t inb(uint16_t port) {
-	uint8_t v;
-	asm volatile("inb %1, %0" : "=a"(v) : "Nd"(port));
-	return v;
-}
-
-uint16_t g_last_count = 0;
-uint32_t g_ticks = 0;
-
-void pit_init() {
-	outb(0x43, 0x34); // ch0, mode 2, lobyte/hibyte
-	outb(0x40, 0xA9);
-	outb(0x40, 0x04); // reload 1193
-}
-
-uint32_t uptime_ms() {
-	outb(0x43, 0x00); // latch ch0
-	uint16_t count = inb(0x40) | (inb(0x40) << 8);
-	if (count == 0)
-		count = 1193;
-	int32_t delta = (int32_t)g_last_count - (int32_t)count;
-	if (delta < 0)
-		delta += 1193; // counted down past zero, wrapped
-	g_last_count = count;
-	g_ticks += (uint32_t)delta;
-	return g_ticks / 1193; // each tick is ~838ns
-}
 
 bool g_phase = false; // blink phase we last painted
 bool g_painted = false;
@@ -70,7 +41,7 @@ void cursor_paint() {
 }
 
 void cursor_tick() {
-	const bool on = (uptime_ms() % 1000) < 500; // 500ms on, 500ms off
+	const bool on = (time::ms() % 1000) < 500; // 500ms on, 500ms off
 	if (on == g_phase)
 		return;
 	g_phase = on;
@@ -145,7 +116,6 @@ void printf(const char* fmt, ...) {
 }
 
 void run() {
-	pit_init();
 	char line[kLineMax + 1];
 	for (;;) {
 		prompt();

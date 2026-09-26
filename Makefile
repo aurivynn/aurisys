@@ -1,6 +1,7 @@
 NASM := nasm
 QEMU := qemu-system-i386
 BUILD := build
+HOST_CXX := g++
 
 IMAGE := $(BUILD)/aurisys.img
 STAGE1 := $(BUILD)/stage1.bin
@@ -36,10 +37,15 @@ LDFLAGS := -m elf_i386 -nostdlib -T src/kernel/linker.ld
 
 KERNEL_CPP := $(wildcard src/kernel/*.cpp src/kernel/*/*.cpp)
 INCLUDES := $(wildcard src/include/*.h)
-KERNEL_OBJS := $(BUILD)/entry.o $(BUILD)/font.o \
+KERNEL_OBJS := $(BUILD)/entry.o $(BUILD)/font.o $(BUILD)/isr_stubs.o \
                $(patsubst src/kernel/%.cpp,$(BUILD)/%.o,$(KERNEL_CPP))
 
-.PHONY: all compile-db run run-headless debug test clean
+BOOT_TEST_SRC := tools/boot-test/main.cpp
+BOOT_TEST_BIN := $(BUILD)/boot-test
+COMPILE_DB_SRC := tools/gen_compile_db/main.cpp
+COMPILE_DB_BIN := $(BUILD)/gen_compile_db
+
+.PHONY: all compile-db run run-headless debug test size clean
 
 all: $(IMAGE) compile-db
 
@@ -64,6 +70,15 @@ $(STAGE2): src/boot/stage2.asm | $(BUILD)
 $(BUILD)/entry.o: src/kernel/arch/entry.asm | $(BUILD)
 	$(NASM) $(AFLAGS) src/kernel/arch/entry.asm -o $@
 
+$(BUILD)/isr_stubs.o: src/kernel/arch/isr.asm | $(BUILD)
+	$(NASM) $(AFLAGS) src/kernel/arch/isr.asm -o $@
+
+$(BOOT_TEST_BIN): $(BOOT_TEST_SRC) | $(BUILD)
+	$(HOST_CXX) -std=c++17 -O2 -Wall -Wextra -o $@ $<
+
+$(COMPILE_DB_BIN): $(COMPILE_DB_SRC) | $(BUILD)
+	$(HOST_CXX) -std=c++17 -O2 -Wall -o $@ $<
+
 $(BUILD)/font.o: src/kernel/fonts/font.asm src/kernel/fonts/font8x16.bin | $(BUILD)
 	$(NASM) $(AFLAGS) -I src/kernel/fonts src/kernel/fonts/font.asm -o $@
 
@@ -81,8 +96,8 @@ $(KERNEL_BIN): $(KERNEL_ELF)
 $(KERNEL_HDR): $(KERNEL_BIN)
 	python3 -c "import struct; d=open('$(KERNEL_BIN)','rb').read(); h=struct.pack('<III',0x4B525541,len(d),0x100000); open('$@','wb').write(h.ljust(512,b'\x00'))"
 
-compile-db:
-	python3 tools/gen_compile_db.py "$(CXX)" "$(KFLAGS)"
+compile-db: $(COMPILE_DB_BIN)
+	$(COMPILE_DB_BIN) "$(CXX)" "$(KFLAGS)"
 
 run: $(IMAGE)
 	$(QEMU) -drive format=raw,file=$(IMAGE) -vga std -serial stdio -no-reboot
@@ -93,13 +108,13 @@ run-headless: $(IMAGE)
 debug: $(IMAGE)
 	$(QEMU) -drive format=raw,file=$(IMAGE) -vga std -serial stdio -no-reboot -s -S
 
-test: $(IMAGE)
-	rm -f serial.log
-	timeout --signal=KILL 20 $(QEMU) -display none -drive format=raw,file=$(IMAGE) \
-		-vga std -serial file:serial.log -monitor none -no-reboot || true
-	@grep -q "1280x960 MODE OK" serial.log || { echo "VBE 1280x960 check FAILED"; cat serial.log; exit 1; }
-	@grep -q "AURISYS: all tests passed" serial.log || { echo "KERNEL TESTS FAILED"; cat serial.log; exit 1; }
+test: $(IMAGE) $(BOOT_TEST_BIN)
+	$(BOOT_TEST_BIN)
 	@echo "BOOT TEST PASSED"
+
+size: $(KERNEL_BIN)
+	@echo "kernel.bin: $$(stat -c %s $(KERNEL_BIN)) bytes (cap 60000)"
+	@test $$(stat -c %s $(KERNEL_BIN)) -le 60000 || { echo "kernel too big"; exit 1; }
 
 clean:
 	rm -rf $(BUILD) serial.log
