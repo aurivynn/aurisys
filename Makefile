@@ -118,6 +118,8 @@ $(BUILD)/app/rt/crt0.o: src/apps/crt0.asm | $(BUILD)
 $(BUILD)/rootfs/bin/%: src/apps/%.cpp src/apps/lib.h src/apps/linker.ld $(APP_RT_OBJS) | $(BUILD)
 	@mkdir -p $(@D) $(BUILD)/app
 	$(CXX) $(APPFLAGS) -c $< -o $(BUILD)/app/$*.o
+	@nm $(BUILD)/app/$*.o | grep -qw main || \
+		{ echo "ERROR: $* exports no unmangled 'main'"; exit 1; }
 	$(LD) -m elf_i386 -T src/apps/linker.ld -o $@ $(APP_RT_OBJS) $(BUILD)/app/$*.o
 	@chmod +x $@
 

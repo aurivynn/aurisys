@@ -17,7 +17,7 @@ jobs:
             nasm gcc-multilib g++-multilib e2fsprogs
 
       - name: Build all stages + kernel
-        run: make all
+        run: make all CXX="g++ -m32"
 
       - name: Kernel size check
         run: make size

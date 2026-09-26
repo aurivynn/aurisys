@@ -30,3 +30,4 @@ int printf(const char* fmt, ...);
 bool is_dot(const char* n);
 
 extern "C" void exit(int code);
+extern "C" int main(int argc, char** argv);
