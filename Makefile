@@ -40,12 +40,13 @@ AFLAGS := -f elf32
 LDFLAGS := -m elf_i386 -nostdlib -T src/kernel/linker.ld
 
 KERNEL_CPP := $(wildcard src/kernel/*.cpp src/kernel/*/*.cpp)
-INCLUDES := $(wildcard src/include/*.h)
+INCLUDES := $(shell find src/include -name '*.h' | sort)
 KERNEL_OBJS := $(BUILD)/entry.o $(BUILD)/font.o $(BUILD)/isr_stubs.o $(BUILD)/syscall_stub.o \
+               $(BUILD)/switch.o \
                $(patsubst src/kernel/%.cpp,$(BUILD)/%.o,$(KERNEL_CPP))
 
 APPFLAGS := $(KFLAGS) -I src/apps
-APP_NAMES := cat df echo fault heap help hexdump ls mem mkdir panic rm uptime write
+APP_NAMES := cat df echo fault heap help hexdump ls mem mkdir panic ps rm spin uptime write
 APP_SRCS := $(addprefix src/apps/,$(addsuffix .cpp,$(APP_NAMES)))
 APP_OBJS := $(addprefix $(BUILD)/app/,$(addsuffix .o,$(APP_NAMES)))
 APP_RT_OBJS := $(BUILD)/app/rt/crt0.o $(BUILD)/app/rt/lib.o $(BUILD)/app/rt/print.o \
@@ -95,6 +96,9 @@ $(BUILD)/isr_stubs.o: src/kernel/arch/isr.asm | $(BUILD)
 
 $(BUILD)/syscall_stub.o: src/kernel/arch/syscall.asm | $(BUILD)
 	$(NASM) $(AFLAGS) src/kernel/arch/syscall.asm -o $@
+
+$(BUILD)/switch.o: src/kernel/arch/switch.asm | $(BUILD)
+	$(NASM) $(AFLAGS) src/kernel/arch/switch.asm -o $@
 
 $(COMPILE_DB_BIN): $(COMPILE_DB_SRC) | $(BUILD)
 	$(HOST_CXX) -std=c++17 -O2 -Wall -o $@ $<

@@ -38,7 +38,6 @@ uint8_t g_b1[kMaxBlockSize]; // general block scratch
 uint8_t g_b2[kMaxBlockSize]; // dirent block scratch
 uint8_t g_ino[512];			 // the current inode image
 char g_name[256];			 // transient name handed to the dirent callback
-char g_cwd[128];
 
 inline uint16_t r16(const uint8_t* p) { return (uint16_t)(p[0] | (uint16_t)p[1] << 8); }
 inline uint32_t r32(const uint8_t* p) {
@@ -377,8 +376,6 @@ bool mount(uint32_t disk_lba) {
 		g_mounted = false;
 		return false;
 	}
-	g_cwd[0] = '/';
-	g_cwd[1] = 0;
 	return true;
 }
 
@@ -430,14 +427,14 @@ bool lookup_abs(const char* path, uint32_t* ino_out) {
 	return true;
 }
 
-bool resolve(const char* path, char* buf, uint32_t bufsz) {
+bool resolve(const char* path, const char* base, char* buf, uint32_t bufsz) {
 	if (!path || !buf || bufsz < 2)
 		return false;
 	char tmp[256];
 	if (path[0] == '/') {
 		tmp[0] = 0;
 	} else {
-		strncpy(tmp, g_cwd, sizeof tmp - 1);
+		strncpy(tmp, base ? base : "/", sizeof tmp - 1);
 		tmp[sizeof tmp - 1] = 0;
 	}
 	int out = (int)strlen(tmp);
@@ -488,31 +485,20 @@ bool resolve(const char* path, char* buf, uint32_t bufsz) {
 	return true;
 }
 
-bool lookup(const char* path, uint32_t* ino_out) {
-	if (!g_mounted || !path || !ino_out)
+bool chdir(const char* base, const char* path, char* out, uint32_t outsz) {
+	if (!g_mounted || !out || outsz < 2)
 		return false;
 	char abs[256];
-	if (!resolve(path, abs, sizeof abs))
-		return false;
-	return lookup_abs(abs, ino_out);
-}
-
-const char* cwd() { return g_mounted ? g_cwd : "/"; }
-
-bool chdir(const char* path) {
-	if (!g_mounted)
-		return false;
-	char abs[256];
-	if (!resolve(path, abs, sizeof abs))
+	if (!resolve(path, base, abs, sizeof abs))
 		return false;
 	uint32_t ino;
-	if (!lookup(abs, &ino))
+	if (!lookup_abs(abs, &ino))
 		return false;
 	struct stat st;
 	if (!getstat(ino, &st) || (st.mode & 0xF000) != 0x4000)
 		return false;
-	strncpy(g_cwd, abs, sizeof g_cwd - 1);
-	g_cwd[sizeof g_cwd - 1] = 0;
+	strncpy(out, abs, outsz - 1);
+	out[outsz - 1] = 0;
 	return true;
 }
 
@@ -666,14 +652,14 @@ bool inline_extents(ext_entry* out, uint32_t* nout) {
 	return true;
 }
 
-bool write_file(const char* path, const void* data, uint32_t len, uint32_t flags) {
+bool write_file(const char* base, const char* path, const void* data, uint32_t len, uint32_t flags) {
 	if (!g_mounted || !path || (len && !data))
 		return false;
 	if ((flags & kWriteTrunc) && (flags & kWriteAppend))
 		return false;
 
 	char abs[256];
-	if (!resolve(path, abs, sizeof abs))
+	if (!resolve(path, base, abs, sizeof abs))
 		return false;
 
 	char* name = abs;
@@ -687,14 +673,14 @@ bool write_file(const char* path, const void* data, uint32_t len, uint32_t flags
 		char* slash = name - 1;
 		const char saved = *slash;
 		*slash = 0;
-		const bool ok = lookup(abs, &parent_ino);
+		const bool ok = lookup_abs(abs, &parent_ino);
 		*slash = saved;
 		if (!ok)
 			return false;
 	}
 
 	uint32_t ino;
-	const bool exists = lookup(abs, &ino);
+	const bool exists = lookup_abs(abs, &ino);
 	ext_entry old_ext[4];
 	uint32_t old_n = 0;
 	if (exists) {
@@ -783,11 +769,11 @@ bool write_file(const char* path, const void* data, uint32_t len, uint32_t flags
 	return commit_counts((int)used - (int)freed, 0, 0);
 }
 
-bool mkdir(const char* path) {
+bool mkdir(const char* base, const char* path) {
 	if (!g_mounted || !path)
 		return false;
 	char abs[256];
-	if (!resolve(path, abs, sizeof abs))
+	if (!resolve(path, base, abs, sizeof abs))
 		return false;
 
 	char* name = abs;
@@ -802,7 +788,7 @@ bool mkdir(const char* path) {
 		char* slash = name - 1;
 		const char saved = *slash;
 		*slash = 0;
-		const bool ok = lookup(abs, &parent_ino);
+		const bool ok = lookup_abs(abs, &parent_ino);
 		*slash = saved;
 		if (!ok)
 			return false;
@@ -811,7 +797,7 @@ bool mkdir(const char* path) {
 	if (!getstat(parent_ino, &st) || (st.mode & 0xF000) != 0x4000)
 		return false;
 	uint32_t tmp;
-	if (lookup(abs, &tmp))
+	if (lookup_abs(abs, &tmp))
 		return false; // already there
 
 	uint32_t ino = alloc_inode();
@@ -865,11 +851,11 @@ bool mkdir(const char* path) {
 	return commit_counts(1, 1, 1);
 }
 
-bool rm(const char* path) {
+bool rm(const char* base, const char* path) {
 	if (!g_mounted || !path)
 		return false;
 	char abs[256];
-	if (!resolve(path, abs, sizeof abs))
+	if (!resolve(path, base, abs, sizeof abs))
 		return false;
 
 	char* name = abs;
@@ -884,12 +870,12 @@ bool rm(const char* path) {
 		char* slash = name - 1;
 		const char saved = *slash;
 		*slash = 0;
-		const bool ok = lookup(abs, &parent_ino);
+		const bool ok = lookup_abs(abs, &parent_ino);
 		*slash = saved;
 		if (!ok)
 			return false;
 	}
-	if (!lookup(abs, &ino))
+	if (!lookup_abs(abs, &ino))
 		return false;
 
 	struct stat st;

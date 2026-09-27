@@ -14,15 +14,13 @@ struct stat {
 
 using dirent_cb = bool (*)(const char* name, uint32_t ino, uint8_t type, void* ctx);
 
-bool mount(uint32_t disk_lba);				  // mbr -> partition -> superblock. false = no fs
-bool lookup(const char* path, uint32_t* ino); // any depth. relative resolves against cwd
+bool mount(uint32_t disk_lba); // mbr -> partition -> superblock. false = no fs
 bool getstat(uint32_t ino, struct stat* out);
 uint32_t read(uint32_t ino, void* buf, uint32_t len, uint32_t off); // bytes read 0 = eof/err
 int list_dir(uint32_t dir_ino, dirent_cb cb, void* ctx);			// entries seen -1 error 0 empty
 
-const char* cwd();
-bool chdir(const char* path);							   // resolves relative to cwd, must be a dir
-bool resolve(const char* path, char* buf, uint32_t bufsz); // absolute form, "/a/../b" -> "/b"
+bool resolve(const char* path, const char* base, char* buf, uint32_t bufsz); // "/a/../b" -> "/b"
+bool chdir(const char* base, const char* path, char* out, uint32_t outsz);	 // must land on a dir
 
 void summary(uint32_t* block_size, uint32_t* blocks, uint32_t* free_blocks, uint32_t* inodes, uint32_t* free_inodes,
 			 uint32_t* feat_compat, uint32_t* feat_incompat, uint32_t* feat_ro);
@@ -30,8 +28,8 @@ void summary(uint32_t* block_size, uint32_t* blocks, uint32_t* free_blocks, uint
 constexpr uint32_t kWriteTrunc = 1;
 constexpr uint32_t kWriteAppend = 2;
 
-bool write_file(const char* path, const void* data, uint32_t len, uint32_t flags);
-bool mkdir(const char* path);
-bool rm(const char* path);
+bool write_file(const char* base, const char* path, const void* data, uint32_t len, uint32_t flags);
+bool mkdir(const char* base, const char* path);
+bool rm(const char* base, const char* path);
 
 } // namespace fs

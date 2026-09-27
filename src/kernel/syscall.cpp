@@ -19,8 +19,6 @@ struct regs {
 	uint32_t edi, esi, ebp, esp, ebx, edx, ecx, eax;
 };
 
-extern "C" [[noreturn]] void exec_back(int code); // back 2 shell
-
 int dispatch(regs* r) {
 	switch (r->eax) {
 	case SYS_read:
@@ -53,20 +51,20 @@ int dispatch(regs* r) {
 		return 0;
 	}
 	case SYS_exit:
-		exec_back((int)r->ebx); // never returns
+		task::exit((int)r->ebx);
 	case SYS_brk:
 		return (int)task_brk(task::g_current, r->ebx);
 	case SYS_sbrk:
 		return (int)task_sbrk(task::g_current, (int)(int32_t)r->ebx);
 	case SYS_writefile:
-		return fs::write_file((const char*)r->ebx, (const void*)r->ecx, r->edx, r->esi) ? 0 : -1;
+		return fs::write_file(task::cwd(), (const char*)r->ebx, (const void*)r->ecx, r->edx, r->esi) ? 0 : -1;
 	case SYS_mkdir:
-		return fs::mkdir((const char*)r->ebx) ? 0 : -1;
+		return fs::mkdir(task::cwd(), (const char*)r->ebx) ? 0 : -1;
 	case SYS_rm: {
 		vfs::node* n = vfs::resolve((const char*)r->ebx);
 		if (n && n->mount)
 			return 1; // mount points stay
-		return fs::rm((const char*)r->ebx) ? 0 : -1;
+		return fs::rm(task::cwd(), (const char*)r->ebx) ? 0 : -1;
 	}
 	case SYS_fstat: {
 		vfs::node* n = vfs::fd_node((int)r->ebx);
@@ -79,7 +77,7 @@ int dispatch(regs* r) {
 		return 0;
 	}
 	case SYS_cwd: {
-		const char* c = fs::cwd();
+		const char* c = task::cwd();
 		const uint32_t n = (uint32_t)strlen(c);
 		if (n >= r->ecx)
 			return -1;

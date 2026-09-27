@@ -1,9 +1,11 @@
 #include "task.h"
 
 #include "arch/gdt.h"
+#include "fs.h"
 #include "lib/heap.h"
 #include "lib/mem.h"
 #include "lib/str.h"
+#include "shell/terminal.h"
 
 #include <stdint.h>
 
@@ -34,7 +36,7 @@ int count_fds(const vfs::ofile* fd) {
 } // namespace
 
 task* find(uint32_t pid) {
-	for (int i = 1; i < kMaxTask; ++i)
+	for (int i = 0; i < kMaxTask; ++i)
 		if (g_tasks[i].state != kFree && g_tasks[i].pid == pid)
 			return &g_tasks[i];
 	return nullptr;
@@ -65,18 +67,55 @@ task* create(const char* name, const char* argv0) {
 	}
 	t->heap_end = t->heap_base + kArenaBytes / 4u;
 	t->brk = t->heap_base;
+
+	t->code_bytes = kCodeBytes;
+	t->code_base = (uint32_t*)kframe_alloc_n(kCodeBytes / 4096u);
+	if (!t->code_base) {
+		kframe_free(t->heap_base);
+		kfree(t->kstack);
+		paging::space_destroy(t->sp);
+		return nullptr;
+	}
+	t->stack_base = (uint32_t*)kframe_alloc_n(kStackBytes / 4096u);
+	if (!t->stack_base) {
+		kframe_free(t->code_base);
+		kframe_free(t->heap_base);
+		kfree(t->kstack);
+		paging::space_destroy(t->sp);
+		return nullptr;
+	}
+
 	t->kstack = (uint32_t*)((uint32_t)t->kstack + kKernelStackBytes);
-	t->pid = (uint32_t)(slot); // pid follows the slot until the table grows
+	t->quantum = kQuantum;
+
+	t->pid = (uint32_t)(slot) + 1u;
 	t->ppid = g_current ? g_current->pid : 0;
 	t->state = kReady;
+
+	t->regs.cs = 0;
 	strncpy(t->name, name ? name : "?", sizeof t->name - 1);
 	// a child inherits the table it was created from, so the console ops come along.
 	if (g_current) {
 		memcpy(t->fd, g_current->fd, sizeof t->fd);
 		t->nfd = (uint8_t)count_fds(t->fd);
 	}
+
+	if (g_current)
+		memcpy(t->cwd, g_current->cwd, sizeof t->cwd);
+	else
+		strcpy(t->cwd, "/");
 	(void)argv0;
 	return t;
+}
+
+const char* cwd() {
+	task* t = g_current;
+	return t ? t->cwd : "/";
+}
+
+bool chdir(const char* path) {
+	task* t = g_current;
+	return t && fs::chdir(t->cwd, path, t->cwd, sizeof t->cwd);
 }
 
 void destroy(task* t) {
@@ -94,6 +133,11 @@ void destroy(task* t) {
 	t->heap_base = nullptr;
 	t->heap_end = nullptr;
 	t->brk = nullptr;
+	// the process image goes back with it
+	kframe_free(t->code_base);
+	t->code_base = nullptr;
+	kframe_free(t->stack_base);
+	t->stack_base = nullptr;
 	t->state = kFree;
 }
 
@@ -125,87 +169,210 @@ task* init() {
 	g_current = &g_tasks[0];
 	g_tasks[0].state = kRunning;
 	g_tasks[0].pid = kPid1;
+	g_tasks[0].ppid = 0;
 	g_tasks[0].sp = &paging::g_boot;
+
+	g_tasks[0].regs.cs = kSelKernCode;
+	g_tasks[0].quantum = kQuantum;
 	strcpy(g_tasks[0].name, "init");
 	return g_current;
 }
 
-// the kernel writes through pid 1, that is what makes fd 1 a file and not a global
-int fd_open_kernel(const char* path, uint32_t flags) { return vfs::fd_open(path, flags); }
-int fd_close_kernel(int fd) { return vfs::fd_close(fd); }
+const char* signal_name(uint32_t sig) {
+	switch (sig) {
+	case kSigTerm:
+		return "SIGTERM";
+	case kSigKill:
+		return "SIGKILL";
+	case kSigChild:
+		return "SIGCHLD";
+	case kSigSegv:
+		return "SIGSEGV";
+	case 4:
+		return "SIGILL";
+	case 7:
+		return "SIGBUS";
+	default:
+		return "none";
+	}
+}
+
+const char* state_name(uint32_t state) {
+	switch (state) {
+	case kRunning:
+		return "R";
+	case kReady:
+		return "S";
+	case kBlocked:
+		return "D";
+	case kZombie:
+		return "Z";
+	case kKilled:
+		return "T";
+	default:
+		return "?";
+	}
+}
+
+// scheduler
+namespace {
+
+task* pick() {
+	const int from = g_current ? (int)(g_current - g_tasks) : 0;
+	for (int i = 1; i <= kMaxTask; ++i) {
+		const int s = (from + i) % kMaxTask;
+		if (g_tasks[s].state == kReady)
+			return &g_tasks[s];
+	}
+	return nullptr;
+}
+
+uint32_t resume_esp(const task* t) { return (uint32_t)(uintptr_t)(t->kstack - kFrWords); }
+
+void push_frame(task* t, const Registers& r) {
+	uint32_t* f = t->kstack - kFrWords;
+	memcpy(f, &r, sizeof(Registers));
+}
+
+extern "C" [[noreturn]] void task_switch_asm(uint32_t user_esp, uint32_t kernel_esp, uint32_t from_user,
+											 uint32_t* slot);
+
+void switch_to(task* to) {
+	task* from = g_current;
+
+	if (from && from->state == kRunning)
+		from->state = kReady;
+	to->state = kRunning;
+	to->quantum = kQuantum;
+	g_current = to;
+	paging::space_switch(to->sp);
+	const uint32_t from_user = (to->regs.cs & 3u) == 3u ? 1u : 0u;
+
+	if (from_user)
+		push_frame(to, to->regs);
+	task_switch_asm(from_user ? resume_esp(to) : 0, to->kslot[5], from_user, to->kslot);
+}
+
+} // namespace
+
+extern "C" void task_switch_now() {
+	reap();
+	task* to = pick();
+	if (!to)
+		return;
+	switch_to(to);
+}
+
+extern "C" void task_suspend_asm(uint32_t* slot);
+
+void schedule() {
+	task_suspend_asm(g_current->kslot);
+	// nothing else was runnable
+}
+
+void yield() { schedule(); }
+
+void on_tick() {
+	task* t = g_current;
+	if (t)
+		++t->utime;
+}
+
+bool preempt(Registers* r) {
+	task* t = g_current;
+	if (!t || t->pid == kPid1)
+		return false;
+
+	if ((r->cs & 3u) != 3u)
+		return false;
+
+	if (t->quantum && --t->quantum)
+		return false;
+	reap();
+	task* to = pick();
+	if (!to || to == t)
+		return false;
+
+	t->regs = *r;
+	switch_to(to);
+	return true;
+}
+
+int runnable() {
+	int n = 0;
+	for (int i = 1; i < kMaxTask; ++i)
+		if (g_tasks[i].state == kReady)
+			++n;
+	return n;
+}
+
+int alive() {
+	int n = 0;
+	for (int i = 0; i < kMaxTask; ++i)
+		if (g_tasks[i].state != kFree)
+			++n;
+	return n;
+}
+
+bool kill(uint32_t pid, uint32_t sig) {
+	task* t = find(pid);
+	if (!t)
+		return false;
+	// SIGKILL cannot be caught
+	if (t->state == kZombie || t->state == kKilled)
+		return false;
+	t->signal = sig;
+	t->state = kKilled;
+	if (t == g_current)
+		exit(128 + (int)sig);
+
+	return true;
+}
+
+void reap() {
+	for (int i = 1; i < kMaxTask; ++i) {
+		task* t = &g_tasks[i];
+		if (t->state != kZombie || t == g_current)
+			continue;
+
+		task* parent = find(t->ppid);
+		if (parent && parent->pid != t->pid && parent->done_n < (uint8_t)kMaxTask)
+			parent->done_pid[parent->done_n++] = t->pid;
+		destroy(t);
+	}
+}
+
+uint32_t take_signal(uint32_t for_pid) {
+	task* t = g_current;
+	if (!t)
+		return kSigNone;
+	for (uint32_t i = 0; i < t->done_n; ++i) {
+		if (for_pid && t->done_pid[i] != for_pid)
+			continue;
+		t->done_pid[i] = t->done_pid[t->done_n - 1u];
+		--t->done_n;
+		return kSigChild;
+	}
+	return kSigNone;
+}
+
+task* fork() { return create("child", "child"); }
+
+[[noreturn]] void exit(int code) {
+	task* t = g_current;
+	if (t) {
+		t->exit_code = (uint32_t)code;
+		if (t->state != kKilled)
+			t->signal = kSigNone;
+		t->state = kZombie;
+	}
+	schedule();
+
+	for (;;)
+		asm volatile("hlt");
+}
+
 int fd_read_kernel(int fd, void* buf, uint32_t len) { return vfs::fd_read(fd, buf, len); }
 int fd_write_kernel(int fd, const void* buf, uint32_t len) { return vfs::fd_write(fd, buf, len); }
-vfs::node* fd_node_kernel(int fd) { return vfs::fd_node(fd); }
-
-void describe(const task* t, char* out, uint32_t outsz) {
-	if (!out || outsz == 0)
-		return;
-	if (!t || t->state == kFree) {
-		out[0] = 0;
-		return;
-	}
-	const char* st = "ready";
-	switch (t->state) {
-	case kRunning:
-		st = "running";
-		break;
-	case kZombie:
-		st = "zombie";
-		break;
-	case kKilled:
-		st = "killed";
-		break;
-	default:
-		break;
-	}
-	char tmp[96];
-	uint32_t n = 0;
-	const char* pre = "pid=";
-	while (*pre && n + 1 < sizeof tmp)
-		tmp[n++] = *pre++;
-	for (uint32_t v = t->pid; v && n + 1 < sizeof tmp;) {
-		char d[3];
-		uint32_t k = 0;
-		char rev[12];
-		uint32_t r = 0;
-		do {
-			rev[r++] = (char)('0' + v % 10u);
-			v /= 10u;
-		} while (v && r < sizeof rev);
-		while (r && n + 1 < sizeof tmp)
-			tmp[n++] = rev[--r];
-		(void)d;
-		(void)k;
-		break;
-	}
-	for (const char* p = " ppid="; *p && n + 1 < sizeof tmp;)
-		tmp[n++] = *p++;
-	for (uint32_t v = t->ppid; v && n + 1 < sizeof tmp;) {
-		char rev[12];
-		uint32_t r = 0;
-		do {
-			rev[r++] = (char)('0' + v % 10u);
-			v /= 10u;
-		} while (v && r < sizeof rev);
-		while (r && n + 1 < sizeof tmp)
-			tmp[n++] = rev[--r];
-		break;
-	}
-	for (const char* p = " state="; *p && n + 1 < sizeof tmp;)
-		tmp[n++] = *p++;
-	for (const char* p = st; *p && n + 1 < sizeof tmp;)
-		tmp[n++] = *p++;
-	for (const char* p = " name="; *p && n + 1 < sizeof tmp;)
-		tmp[n++] = *p++;
-	for (const char* p = t->name; *p && n + 1 < sizeof tmp;)
-		tmp[n++] = *p++;
-	tmp[n] = 0;
-	uint32_t c = 0;
-	while (tmp[c] && c + 1 < outsz) {
-		out[c] = tmp[c];
-		++c;
-	}
-	out[c] = 0;
-}
 
 } // namespace task

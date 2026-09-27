@@ -12,6 +12,7 @@
 #include "lib/print.h"
 #include "lib/str.h"
 #include "lib/time.h"
+#include "task.h"
 #include "vfs.h"
 
 #include <stdarg.h>
@@ -139,8 +140,9 @@ void fd1_put(char c) {
 
 void vprint(const char* fmt, va_list ap) { print::vprintf(fd1_put, fmt, ap); }
 
-// wait for a key (keyboard first, then serial), blinking while idle
+// wait for a key, keyboard first then serial
 int read_char() {
+	int spins = 0;
 	for (;;) {
 		cursor_tick();
 		int c = kbd::poll();
@@ -149,6 +151,10 @@ int read_char() {
 		c = serial::recv();
 		if (c >= 0)
 			return c;
+		if (++spins < 64)
+			continue;
+		spins = 0;
+		task::yield();
 	}
 }
 
@@ -172,7 +178,7 @@ int tokenize(char* line, const char** argv, int argv_max) {
 	return argc;
 }
 
-// cd stays a builtin because the cwd is kernel state
+// cd stays a builtin because there is no chdir syscall yet
 bool builtin_cd(int argc, const char** argv) {
 	if (strcmp(argv[0], "cd") != 0)
 		return false;
@@ -181,12 +187,12 @@ bool builtin_cd(int argc, const char** argv) {
 		return true;
 	}
 	const char* where = argc == 2 ? argv[1] : "/";
-	if (!fs::chdir(where))
+	if (!task::chdir(where))
 		terminal::printf("cd: %s: not a directory\n", where);
 	return true;
 }
 
-bool exec_command(const char* name, int argc, const char** argv) {
+bool exec_command(const char* name, int argc, const char** argv, bool background) {
 	char pp[256];
 	bool found = vfs::find_in_path(name, pp, sizeof pp);
 	if (!found && strchr(name, '/')) {
@@ -196,17 +202,89 @@ bool exec_command(const char* name, int argc, const char** argv) {
 	}
 	if (!found)
 		return false;
-	return exec::run(pp, argc, argv); // prints its own errors
+
+	if (background) {
+		const uint32_t pid = exec::spawn(pp, argc, argv);
+		if (pid)
+			terminal::printf("[%u] %s\n", pid, pp);
+		return true;
+	}
+	return exec::run(pp, argc, argv, nullptr); // prints its own errors
+}
+
+int match_ci(const char* a, const char* b) {
+	while (*a && *b) {
+		char x = *a, y = *b;
+		if (x >= 'a' && x <= 'z')
+			x = (char)(x - 'a' + 'A');
+		if (y >= 'a' && y <= 'z')
+			y = (char)(y - 'a' + 'A');
+		if (x != y)
+			return (int)(unsigned char)x - (int)(unsigned char)y;
+		++a;
+		++b;
+	}
+	return (int)(unsigned char)*a - (int)(unsigned char)*b;
+}
+
+bool builtin_kill(int argc, const char** argv) {
+	if (strcmp(argv[0], "kill") != 0)
+		return false;
+	if (argc < 2 || argc > 3) {
+		terminal::printf("usage: kill <pid> [TERM|KILL|SEGV]\n");
+		return true;
+	}
+	uint32_t sig = task::kSigTerm;
+	if (argc == 3) {
+		const char* s = argv[2];
+		if (match_ci(s, "KILL") == 0)
+			sig = task::kSigKill;
+		else if (match_ci(s, "SEGV") == 0)
+			sig = task::kSigSegv;
+		else if (match_ci(s, "TERM") == 0)
+			sig = task::kSigTerm;
+		else {
+			terminal::printf("kill: unknown signal %s\n", s);
+			return true;
+		}
+	}
+	if (argv[1][0] < '0' || argv[1][0] > '9') {
+		terminal::printf("kill: %s is not a pid\n", argv[1]);
+		return true;
+	}
+	uint32_t pid = 0;
+	for (const char* p = argv[1]; *p >= '0' && *p <= '9'; ++p)
+		pid = pid * 10u + (uint32_t)(*p - '0');
+
+	if (pid == task::kPid1) {
+		terminal::printf("kill: %u is the shell\n", pid);
+		return true;
+	}
+	if (!task::kill(pid, sig))
+		terminal::printf("kill: no such process %u\n", pid);
+	else
+		terminal::printf("kill: %u got %s\n", pid, task::signal_name(sig));
+	return true;
 }
 
 void run_line(char* line) {
 	const char* argv[8];
-	const int argc = tokenize(line, argv, 8);
+	int argc = tokenize(line, argv, 8);
 	if (argc == 0)
 		return;
-	if (builtin_cd(argc, argv))
+
+	bool background = false;
+	if (argc > 1 && strcmp(argv[argc - 1], "&") == 0)
+		background = true, --argc;
+	if (argc == 0)
 		return;
-	if (exec_command(argv[0], argc, argv))
+	if (!background) {
+		if (builtin_cd(argc, argv))
+			return;
+		if (builtin_kill(argc, argv))
+			return;
+	}
+	if (exec_command(argv[0], argc, argv, background))
 		return;
 	terminal::printf("unknown command: %s\n", argv[0]);
 }
@@ -215,7 +293,7 @@ void prompt() {
 	console::setcolor(0xCBA6F7, 0x1E1E2E);
 	terminal::printf("aurisys ");
 	console::setcolor(0xA6E3A1, 0x1E1E2E);
-	terminal::printf("%s", fs::cwd());
+	terminal::printf("%s", task::cwd());
 	console::setcolor(0xCDD6F4, 0x1E1E2E);
 	terminal::printf("> ");
 	cursor_paint();
@@ -342,10 +420,10 @@ void complete_path(int s, int e) {
 		char tmp[256];
 		memcpy(tmp, g_line + s, (size_t)keep);
 		tmp[keep] = 0;
-		if (!fs::resolve(tmp, dir, sizeof dir))
+		if (!fs::resolve(tmp, task::cwd(), dir, sizeof dir))
 			return;
 	} else {
-		strncpy(dir, fs::cwd(), sizeof dir - 1);
+		strncpy(dir, task::cwd(), sizeof dir - 1);
 		dir[sizeof dir - 1] = 0;
 	}
 	vfs::node* dnode = vfs::resolve(dir);
@@ -462,6 +540,8 @@ void print(const char* string) { printf(string); }
 void run() {
 	for (;;) {
 		prompt();
+		if (task::take_signal(0) == task::kSigChild)
+			terminal::printf("[background process finished]\n");
 		g_line_x = console::cx();
 		g_line_y = console::cy();
 		g_line[0] = 0;

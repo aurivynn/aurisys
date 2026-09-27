@@ -280,7 +280,7 @@ node* resolve(const char* path) {
 	if (!path)
 		return nullptr;
 	char abs[256];
-	if (!fs::resolve(path, abs, sizeof abs))
+	if (!fs::resolve(path, task::cwd(), abs, sizeof abs))
 		return nullptr;
 	node* cur = &g_root;
 	char* tok = abs;
@@ -331,7 +331,7 @@ bool mount(node* tree, const char* at) {
 		return false;
 	node* mp = resolve(at);
 	if (!mp) {
-		if (!fs::mkdir(at))
+		if (!fs::mkdir("/", at))
 			return false;
 		mp = resolve(at);
 		if (!mp)
@@ -359,7 +359,7 @@ int fd_open(const char* path, uint32_t flags) {
 	if (!r)
 		return -1;
 	if (r->inode && r->type == kTypeFile && (flags & kFdTrunc)) {
-		if (!fs::write_file(path, nullptr, 0, fs::kWriteTrunc))
+		if (!fs::write_file(task::cwd(), path, nullptr, 0, fs::kWriteTrunc))
 			return -1;
 		r->size = 0; // keep the node honest about the truncate
 	}

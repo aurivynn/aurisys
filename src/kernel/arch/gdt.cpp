@@ -4,19 +4,29 @@
 
 #include "lib/mem.h"
 
+#include <stddef.h>
 #include <stdint.h>
 
 namespace {
 
-// i386 tss layout, the cpu reads esp0/ss0 when a ring3 trap fires
+// i386 tss layout, the cpu reads esp0/ss0 when a ring3 trap fires. it also writes the interrupted context into the tss,
+// so the fields past ebx have to sit exactly where the cpu expects them or the old cs and ss end up in the wrong place
 struct Tss {
-	uint32_t link, esp0, ss0, esp1, ss1, esp2, ss2;
-	uint32_t cr3, eip, eflags, eax, ecx, edx, ebx;
-	uint32_t esp, ebp, esi, edi, es, cs, ss, ds, fs, gs;
+	uint32_t link;
+	uint32_t esp0, ss0, esp1, ss1, esp2, ss2;
+	uint32_t cr3, eip, eflags, eax, ecx, edx, ebx, esp, ebp;
+	uint32_t es, cs, ss, ds, fs, gs;
 	uint32_t ldt;
 	uint16_t trap;
 	uint16_t iomap;
 };
+
+static_assert(offsetof(Tss, esp) == 56, "the cpu writes the old esp here");
+static_assert(offsetof(Tss, ebp) == 60, "the cpu writes the old ebp here");
+static_assert(offsetof(Tss, es) == 64, "the cpu writes the old es here");
+static_assert(offsetof(Tss, cs) == 68, "the cpu writes the old cs here");
+static_assert(offsetof(Tss, ss) == 72, "the cpu writes the old ss here");
+static_assert(sizeof(Tss) == 96, "a 32 bit tss with no iomap is 96 bytes");
 
 Tss g_tss __attribute__((section(".paging"))) = {};
 

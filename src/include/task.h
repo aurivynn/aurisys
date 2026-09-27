@@ -13,18 +13,34 @@ enum : uint32_t {
 	kFree = 0,
 	kReady,	  // runnable, waiting for a turn
 	kRunning, // on a cpu
-	kZombie,  // exited, waiting to be Bye
+	kZombie,  // exited, still in the table waiting to be reaped
 	kKilled,  // took a signal, unwinding
+	kBlocked, // waiting on a device, off the run queue
 };
 
 constexpr int kMaxTask = 8;
 constexpr int kPid1 = 1; // the shell, the kernel writes through its fds
 
+// how many pit ticks a process gets before it is moved along
+constexpr uint32_t kQuantum = 2;
+
+// signals
+enum : uint32_t {
+	kSigChild = 17, // a child changed state
+	kSigKill = 9,	// cannot be caught
+	kSigSegv = 11,	// touched something it should not have
+	kSigTerm = 15,	// asked to stop
+	kSigNone = 0,
+};
+
+const char* signal_name(uint32_t sig);
+const char* state_name(uint32_t state);
+
 struct task {
 	uint32_t pid, ppid;
 	uint32_t state;
 	uint32_t exit_code;
-	uint32_t signal;   // pending, delivered at the next return to user mode
+	uint32_t signal;   // what killed it, kSigNone if it just exited
 	paging::space* sp; // address space root, cr3 for this process
 	uint32_t* kstack;  // kernel stack top
 	Registers regs;	   // save area, filled in when we leave the process
@@ -35,10 +51,35 @@ struct task {
 	uint32_t* heap_base; // first byte the process may use
 	uint32_t* heap_end;	 // one past the last, the ceiling
 	uint32_t* brk;		 // the break where the next brk() hands out from
+
+	// the process image
+	uint32_t* code_base;
+	uint32_t code_bytes;
+
+	// the user stack
+	uint32_t* stack_base;
+
+	// where this process is
+	char cwd[128];
+
+	// where to pick this process up again
+	uint32_t kslot[6]; // ebx esi edi ebp, return address, entry esp
+	uint32_t quantum;  // ticks left before it is moved along
+	uint32_t utime;	   // ticks it has actually had, for /proc
+	uint32_t ktime;	   // ticks it spent in the kernel, for /proc
+
+	// children that have ended and not been collected yet, oldest first
+	uint32_t done_pid[kMaxTask];
+	uint8_t done_n; // how many entries of done_pid are live
 };
 
 constexpr uint32_t kArenaBytes = 1024u * 1024u;
 constexpr uint32_t kArenaVA = 0x40200000u;
+
+constexpr uint32_t kCodeBytes = 0x40000u;
+constexpr uint32_t kAppBase = 0x40000000u;
+constexpr uint32_t kStackBase = 0x40100000u;
+constexpr uint32_t kStackBytes = 0x10000u;
 
 uint32_t task_brk(task* t, uint32_t addr);
 uint32_t task_sbrk(task* t, int delta);
@@ -53,14 +94,32 @@ task* find(uint32_t pid);
 task* by_pid(uint32_t pid);
 task* init(); // pid 1, the shell
 
-// the fd table the kernel itself uses, ie what printf(1, ...) hits
-int fd_open_kernel(const char* path, uint32_t flags);
-int fd_close_kernel(int fd);
+// scheduler
+
+void schedule();			// give up the cpu, come back when picked again
+void yield();				// same thing, spelled for callers that block
+void on_tick();				// the pit handler calls this
+bool preempt(Registers* r); // true if the tick took the cpu away
+int runnable();				// how many are ready, for the boot test
+
+// fork the current process
+task* fork();
+
+// end the current process
+[[noreturn]] void exit(int code);
+
+// signals
+bool kill(uint32_t pid, uint32_t sig);
+void reap(); // collect the zombies, tell the parents
+uint32_t take_signal(uint32_t for_pid);
+int alive(); // processes that are not free, the shell included
+
+// the current process working directory. "/" before the root is mounted
+const char* cwd();
+bool chdir(const char* path); // false unless it lands on a directory
+
+// the fd table the kernel itself uses, aka what printf(1, ...) hits
 int fd_read_kernel(int fd, void* buf, uint32_t len);
 int fd_write_kernel(int fd, const void* buf, uint32_t len);
-vfs::node* fd_node_kernel(int fd);
-
-// print a task the way ps will, used by the fault path and /proc
-void describe(const task* t, char* out, uint32_t outsz);
 
 } // namespace task

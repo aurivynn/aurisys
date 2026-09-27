@@ -17,6 +17,7 @@
 #include "lib/print.h"
 #include "lib/time.h"
 #include "fs.h"
+#include "proc.h"
 #include "shell/terminal.h"
 #include "task.h"
 #include "vfs.h"
@@ -275,6 +276,50 @@ void test_arena() {
 	both("    arena=%s\n", ok ? "OK" : "FAIL");
 }
 
+void test_sched() {
+	bool ok = true;
+	ok = ok && task::g_current && task::g_current->pid == task::kPid1;
+	ok = ok && task::g_current->state == task::kRunning;
+	ok = ok && task::runnable() == 0;
+	ok = ok && task::alive() == 1;
+
+	task::task* a = task::fork();
+	task::task* b = task::fork();
+	ok = ok && a && b && a != b;
+	if (a && b) {
+		ok = ok && a->state == task::kReady && b->state == task::kReady;
+		ok = ok && a->ppid == task::kPid1 && b->ppid == task::kPid1;
+		ok = ok && a->pid != b->pid;
+		ok = ok && a->sp && b->sp && a->sp != b->sp;
+		ok = ok && (a->regs.cs & 3u) == 0u;
+		ok = ok && a->quantum == task::kQuantum;
+		ok = ok && task::find(a->pid) == a && task::find(b->pid) == b;
+		ok = ok && task::find(9999) == nullptr;
+		ok = ok && task::kill(a->pid, task::kSigKill);
+		ok = ok && a->state == task::kKilled && a->signal == task::kSigKill;
+		ok = ok && task::g_current->state == task::kRunning; // we did not move
+		ok = ok && !task::kill(a->pid, task::kSigKill);		 // already dying
+		ok = ok && !task::kill(9999, task::kSigKill);		 // no such thing
+
+		ok = ok && task::runnable() == 1; // only b is left
+	}
+	// everything has to go back to where it started
+	size_t used0, big0;
+	heap_stats(nullptr, &used0, &big0);
+	if (a)
+		task::destroy(a);
+	if (b)
+		task::destroy(b);
+	ok = ok && task::alive() == 1;
+	ok = ok && task::runnable() == 0;
+	size_t used1, big1;
+	heap_stats(nullptr, &used1, &big1);
+	ok = ok && used1 <= used0 + task::kArenaBytes;
+	ok = ok && big1 >= big0;
+
+	both("    sched=%s\n", ok ? "OK" : "FAIL");
+}
+
 void test_paging() {
 	paging::space* s = paging::space_current();
 	bool ok = (s == &paging::g_boot);
@@ -344,10 +389,29 @@ extern "C" void kernel_main(bootinfo* bi) {
 	both("    ata=%s\n", ata_ok ? "OK" : "FAIL");
 	task::init();
 	test_arena();
+	test_sched();
 	const bool fs_ok = ata_ok && fs::mount(0);
 	both("    fs=%s\n", fs_ok ? "OK" : "FAIL");
 	const bool vfs_ok = fs_ok && vfs::init();
 	both("    vfs=%s\n", vfs_ok ? "OK" : "FAIL");
+
+	if (vfs_ok)
+		procfs::init();
+
+	if (vfs_ok) {
+		bool tree_ok = true;
+		vfs::node* dev = vfs::resolve("/dev/null");
+		tree_ok = tree_ok && dev && dev->type == vfs::kTypeChar;
+		vfs::node* proc = vfs::resolve("/proc");
+		tree_ok = tree_ok && proc && proc->type == vfs::kTypeDir;
+		tree_ok = tree_ok && proc && proc->mount;
+		tree_ok = tree_ok && vfs::resolve("/proc/1/stat") != nullptr;
+
+		vfs::node* dv = vfs::resolve("/dev");
+		vfs::node out;
+		tree_ok = tree_ok && dv && dv->mount && vfs::readdir(dv, 0, &out) == 0;
+		both("    trees=%s\n", tree_ok ? "OK" : "FAIL");
+	}
 
 	console::setcolor(0xCBA6F7, 0x1E1E2E);
 	both("\n  AURISYS: all tests passed\n");

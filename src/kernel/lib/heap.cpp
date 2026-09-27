@@ -237,17 +237,29 @@ void kframe_free(void* frame) { kfree(frame); }
 
 size_t heap_largest_free() {
 	size_t best = 0;
-	for (block* b = g_head; b; b = b->next)
-		if (!in_use(b) && bsize(b) - sizeof(block) > best)
-			best = bsize(b) - sizeof(block);
+	for (block* b = g_head; b; b = b->next) {
+		if (in_use(b))
+			continue;
+
+		const uint32_t room = bsize(b);
+		if (room <= sizeof(block))
+			continue;
+		const size_t usable = room - sizeof(block);
+		if (usable > best)
+			best = usable;
+	}
 	return best;
 }
 
 void heap_stats(size_t* total, size_t* used, size_t* largest_free) {
 	size_t live = 0;
-	for (block* b = g_head; b; b = b->next)
-		if (in_use(b))
-			live += bsize(b) - sizeof(block);
+	for (block* b = g_head; b; b = b->next) {
+		if (!in_use(b))
+			continue;
+		const uint32_t room = bsize(b);
+		if (room > sizeof(block))
+			live += room - sizeof(block);
+	}
 	if (total)
 		*total = g_end - g_start;
 	if (used)

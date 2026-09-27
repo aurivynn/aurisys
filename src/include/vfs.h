@@ -35,7 +35,7 @@ struct node {
 };
 
 bool init();					 // ext4 root plus devfs at /dev plus the fd table
-node* resolve(const char* path); // relative paths resolve against fs::cwd
+node* resolve(const char* path); // relative paths resolve against the calling process cwd
 node* root();
 int readdir(node* n, uint32_t index, node* out); // out filled, 0 ok, neg end
 bool mount(node* tree, const char* at);
