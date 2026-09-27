@@ -7,9 +7,9 @@ int main(int argc, char** argv) {
 	int first = 1;
 	if (argc >= 3 && argv[1][0] == '-') {
 		if (argv[1][1] == 'a')
-			flags |= kWriteAppend;
+			flags |= O_APPEND;
 		else if (argv[1][1] == 't')
-			flags |= kWriteTrunc;
+			flags |= O_TRUNC;
 		else {
 			printf("usage: write [-a|-t] <path> [words...]\n");
 			return 1;

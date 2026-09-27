@@ -30,8 +30,11 @@ enum {
 
 enum { kTypeFile = 1, kTypeDir = 2, kTypeChar = 3 };
 
-// write modes, values match the fs side
-enum { kWriteTrunc = 1, kWriteAppend = 2 };
+constexpr uint32_t O_WRONLY = 1u;
+constexpr uint32_t O_RDWR = 2u;
+constexpr uint32_t O_CREAT = 0100u;	  // 64
+constexpr uint32_t O_TRUNC = 01000u;  // 512
+constexpr uint32_t O_APPEND = 02000u; // 1024
 
 struct vfs_dirent {
 	char name[64];

@@ -140,7 +140,9 @@ $(KERNEL_ELF): $(KERNEL_OBJS) src/kernel/linker.ld | $(BUILD)
 
 $(KERNEL_BIN): $(KERNEL_ELF)
 	$(OBJCOPY) -O binary $< $@
-	@test $$(stat -c %s $@) -le 60000 || { echo "ERROR: kernel bigger than 56KB low-memory load buffer"; exit 1; }
+	@n=$$(stat -c %s $@); test $$n -le 60000 || { echo "ERROR: kernel is $$n bytes, over the 60000 cap"; \
+		echo "       the bootloaders real ceiling is 127 sectors (65024 bytes)"; \
+		exit 1; }
 
 $(KERNEL_HDR): $(KERNEL_BIN)
 	python3 -c "import struct; d=open('$(KERNEL_BIN)','rb').read(); h=struct.pack('<III',0x4B525541,len(d),0x100000); open('$@','wb').write(h.ljust(512,b'\x00'))"
@@ -166,8 +168,9 @@ fs-check: $(IMAGE) $(FS_IMG)
 	@echo "fs.img is clean ext4"
 
 size: $(KERNEL_BIN)
-	@echo "kernel.bin: $$(stat -c %s $(KERNEL_BIN)) bytes (cap 60000)"
-	@test $$(stat -c %s $(KERNEL_BIN)) -le 60000 || { echo "kernel too big"; exit 1; }
+	@n=$$(stat -c %s $(KERNEL_BIN)); \
+	echo "kernel.bin: $$n bytes (cap 60000, hardware ceiling 65024, $$((60000 - n)) to spare)"; \
+	test $$n -le 60000 || { echo "kernel too big"; exit 1; }
 
 clean:
 	rm -rf $(BUILD)

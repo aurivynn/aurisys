@@ -276,6 +276,24 @@ void test_arena() {
 	both("    arena=%s\n", ok ? "OK" : "FAIL");
 }
 
+void test_open_modes() {
+	bool ok = true;
+	ok = ok && fs::write_file(task::cwd(), "/mnt", "abcdefgh", 8, O_TRUNC);
+
+	const int app = vfs::fd_open("/mnt", O_APPEND);
+	ok = ok && app >= 0 && vfs::lseek(app, 0, 1) == 8;
+	vfs::fd_close(app);
+
+	const int trunc = vfs::fd_open("/mnt", O_TRUNC);
+	ok = ok && trunc >= 0 && vfs::lseek(trunc, 0, 1) == 0;
+	vfs::fd_close(trunc);
+	vfs::node* n = vfs::resolve("/mnt");
+	fs::stat st;
+	ok = ok && n && fs::getstat(n->inode, &st) && st.size == 0;
+	both("    modes=%s\n", ok ? "OK" : "FAIL");
+	fs::rm(task::cwd(), "/mnt");
+}
+
 void test_sched() {
 	bool ok = true;
 	ok = ok && task::g_current && task::g_current->pid == task::kPid1;
@@ -394,6 +412,8 @@ extern "C" void kernel_main(bootinfo* bi) {
 	both("    fs=%s\n", fs_ok ? "OK" : "FAIL");
 	const bool vfs_ok = fs_ok && vfs::init();
 	both("    vfs=%s\n", vfs_ok ? "OK" : "FAIL");
+	if (vfs_ok)
+		test_open_modes();
 
 	if (vfs_ok)
 		procfs::init();

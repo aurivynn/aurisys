@@ -358,8 +358,8 @@ int fd_open(const char* path, uint32_t flags) {
 	node* r = resolve(path);
 	if (!r)
 		return -1;
-	if (r->inode && r->type == kTypeFile && (flags & kFdTrunc)) {
-		if (!fs::write_file(task::cwd(), path, nullptr, 0, fs::kWriteTrunc))
+	if (r->inode && r->type == kTypeFile && (flags & O_TRUNC)) {
+		if (!fs::write_file(task::cwd(), path, nullptr, 0, O_TRUNC))
 			return -1;
 		r->size = 0; // keep the node honest about the truncate
 	}
@@ -376,7 +376,7 @@ int fd_open(const char* path, uint32_t flags) {
 	e->n.name = e->n.name_buf; // the copy carries its own name buffer
 	e->pos = 0;
 	e->flags = flags;
-	if ((flags & kFdAppend) && e->n.inode) {
+	if ((flags & O_APPEND) && e->n.inode) {
 		fs::stat st;
 		if (fs::getstat(e->n.inode, &st))
 			e->pos = st.size; // append starts at the end
@@ -419,7 +419,7 @@ int fd_write(int fd, const void* buf, uint32_t len) {
 	if (!e->n.write)
 		return -1;
 	// append means every write lands at the end, like O_APPEND
-	if ((e->flags & kFdAppend) && e->n.inode) {
+	if ((e->flags & O_APPEND) && e->n.inode) {
 		fs::stat st;
 		if (fs::getstat(e->n.inode, &st))
 			e->pos = st.size;

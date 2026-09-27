@@ -655,7 +655,7 @@ bool inline_extents(ext_entry* out, uint32_t* nout) {
 bool write_file(const char* base, const char* path, const void* data, uint32_t len, uint32_t flags) {
 	if (!g_mounted || !path || (len && !data))
 		return false;
-	if ((flags & kWriteTrunc) && (flags & kWriteAppend))
+	if ((flags & O_TRUNC) && (flags & O_APPEND))
 		return false;
 
 	char abs[256];
@@ -685,11 +685,11 @@ bool write_file(const char* base, const char* path, const void* data, uint32_t l
 	uint32_t old_n = 0;
 	if (exists) {
 		// create only refuses to touch a file thats already there
-		if (!(flags & (kWriteTrunc | kWriteAppend)))
+		if (!(flags & (O_TRUNC | O_APPEND)))
 			return false;
 		if (!load_inode(ino) || !inode_is_file())
-			return false;		 // dirs do not get overwritten
-		if (flags & kWriteTrunc) // remember the old blocks to free later
+			return false;	 // dirs do not get overwritten
+		if (flags & O_TRUNC) // remember the old blocks to free later
 			if (!inline_extents(old_ext, &old_n))
 				return false;
 	} else {
@@ -698,7 +698,7 @@ bool write_file(const char* base, const char* path, const void* data, uint32_t l
 			return false;
 	}
 
-	const bool append = exists && (flags & kWriteAppend);
+	const bool append = exists && (flags & O_APPEND);
 	if (append) {
 		// only plain extent files, same as everything we create
 		if (!(r32(g_ino + 0x20) & kExtentsFl))
@@ -759,7 +759,7 @@ bool write_file(const char* base, const char* path, const void* data, uint32_t l
 		return commit_counts((int)used, 1, 0);
 	}
 	uint32_t freed = 0;
-	if (flags & kWriteTrunc) {
+	if (flags & O_TRUNC) {
 		for (uint32_t i = 0; i < old_n; ++i) {
 			if (!free_blocks(old_ext[i].first, old_ext[i].len))
 				return false;

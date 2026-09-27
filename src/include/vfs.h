@@ -1,5 +1,7 @@
 #pragma once
 
+#include "syscall.h"
+
 #include <stdint.h>
 
 namespace vfs {
@@ -47,8 +49,6 @@ struct ofile {
 };
 
 constexpr int kMaxFd = 16;
-constexpr uint32_t kFdAppend = 1;
-constexpr uint32_t kFdTrunc = 2;
 
 int fd_open(const char* path, uint32_t flags);
 int fd_close(int fd);
