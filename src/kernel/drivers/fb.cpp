@@ -57,7 +57,8 @@ void fill_rect(int x, int y, int w, int h, uint32_t color) {
 }
 
 void drawchar(int x, int y, char c, uint32_t fg, uint32_t bg) {
-	const uint8_t* glyph = font8x16_vga[(uint8_t)c];
+	const uint8_t idx = (uint8_t)c < 128u ? (uint8_t)c : (uint8_t)'?';
+	const uint8_t* glyph = font8x16_vga[idx];
 	for (int yy = 0; yy < 16; ++yy) {
 		const uint8_t bits = glyph[yy];
 		uint32_t* row = (uint32_t*)(g_addr + (uint32_t)(y + yy) * g_pitch);

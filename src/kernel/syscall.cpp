@@ -56,15 +56,22 @@ int dispatch(regs* r) {
 		return (int)task_brk(task::g_current, r->ebx);
 	case SYS_sbrk:
 		return (int)task_sbrk(task::g_current, (int)(int32_t)r->ebx);
-	case SYS_writefile:
-		return fs::write_file(task::cwd(), (const char*)r->ebx, (const void*)r->ecx, r->edx, r->esi) ? 0 : -1;
 	case SYS_mkdir:
 		return fs::mkdir(task::cwd(), (const char*)r->ebx) ? 0 : -1;
-	case SYS_rm: {
+	case SYS_unlink: {
 		vfs::node* n = vfs::resolve((const char*)r->ebx);
 		if (n && n->mount)
 			return 1; // mount points stay
 		return fs::rm(task::cwd(), (const char*)r->ebx) ? 0 : -1;
+	}
+	case SYS_pipe: {
+		int fds[2] = {-1, -1};
+		if (vfs::pipe(fds))
+			return -1;
+		int* out = (int*)r->ebx;
+		out[0] = fds[0];
+		out[1] = fds[1];
+		return 0;
 	}
 	case SYS_fstat: {
 		vfs::node* n = vfs::fd_node((int)r->ebx);

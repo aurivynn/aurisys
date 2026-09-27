@@ -9,6 +9,7 @@
 #include "fs.h"
 #include "lib/mem.h"
 #include "lib/str.h"
+#include "shell/terminal.h"
 #include "task.h"
 
 #include <stdint.h>
@@ -45,6 +46,18 @@ node g_devfs; // the dev tree root
 // ext4 backend adapter
 
 int ext_read(node* n, void* buf, uint32_t off, uint32_t len) { return (int)fs::read(n->inode, buf, len, off); }
+
+// writing through a descriptor
+int ext_write(node* n, const void* buf, uint32_t off, uint32_t len) {
+	if (!n->inode)
+		return -1;
+	if (!fs::write_at(n->inode, buf, off, len))
+		return -1;
+	fs::stat st;
+	if (fs::getstat(n->inode, &st))
+		n->size = st.size;
+	return (int)len;
+}
 
 node* ext_find_child(node* n, const char* name);
 
@@ -89,6 +102,7 @@ int ext_readdir(node* n, uint32_t index, node* out) {
 	out->type = c.type;
 	out->parent = n;
 	out->read = ext_read;
+	out->write = ext_write;
 	out->readdir = ext_readdir;
 	out->find_child = ext_find_child;
 	fs::stat st;
@@ -126,6 +140,7 @@ node* ext_find_child(node* n, const char* name) {
 	out->type = c.type;
 	out->parent = n;
 	out->read = ext_read;
+	out->write = ext_write;
 	out->readdir = ext_readdir;
 	out->find_child = ext_find_child;
 	fs::stat st;
@@ -196,11 +211,14 @@ int dev_serial_wr(void*, const void* buf, uint32_t len) {
 int dev_kbd_rd(void*, void* buf, uint32_t len) {
 	if (len == 0)
 		return 0;
-	int c = kbd::poll();
-	if (c < 0)
-		return 0;
-	((uint8_t*)buf)[0] = (uint8_t)c;
-	return 1;
+	for (;;) {
+		const int c = kbd::poll();
+		if (c >= 0) {
+			((uint8_t*)buf)[0] = (uint8_t)c;
+			return 1;
+		}
+		kbd::wait();
+	}
 }
 
 int dev_fb_wr(void*, const void* buf, uint32_t len) {
@@ -349,12 +367,46 @@ bool mount(node* tree, const char* at) {
 // the fd table. it lives in the process now, so two processes can have fd 3 open on different files at the same time
 static ofile* fds() { return task::g_current ? task::g_current->fd : nullptr; }
 
+// the pipe storage
+namespace {
+
+struct pipebuf {
+	uint8_t buf[kPipeBytes];
+	uint32_t head; // where the next byte goes
+	uint32_t tail; // where the next one comes from
+	uint32_t n;	   // bytes in it
+	int32_t readers;
+	int32_t writers;
+	task::task* waiting;
+	int open;
+};
+
+pipebuf g_pipes[kMaxPipe];
+
+struct memwin {
+	uint8_t* buf;
+	uint32_t cap;
+	uint32_t wpos;
+};
+
+} // namespace
+
+static pipebuf* pipe_of(node* n) { return (pipebuf*)n->internal; }
+
 int fd_open(const char* path, uint32_t flags) {
 	ofile* g_fd = fds();
 	if (!g_fd)
 		return -1;
 	if (!path)
 		return -1;
+
+	if (flags & O_CREAT) {
+		char pp[256];
+		if (fs::resolve(path, task::cwd(), pp, sizeof pp) && !resolve(path)) {
+			if (!fs::write_file(task::cwd(), path, nullptr, 0, O_TRUNC))
+				return -1;
+		}
+	}
 	node* r = resolve(path);
 	if (!r)
 		return -1;
@@ -384,14 +436,63 @@ int fd_open(const char* path, uint32_t flags) {
 	return fd;
 }
 
-int fd_close(int fd) {
-	ofile* g_fd = fds();
-	if (!g_fd)
-		return -1;
-	if (fd < 0 || fd >= kMaxFd)
-		return -1;
+static void close_in(task::task* t, int fd) {
+	ofile* g_fd = t ? &t->fd[0] : nullptr;
+	if (!g_fd || fd < 0 || fd >= kMaxFd)
+		return;
+
+	if (g_fd[fd].n.type == kTypeMem && g_fd[fd].n.internal) {
+		((memwin*)g_fd[fd].n.internal)->buf = nullptr;
+	}
+	if (g_fd[fd].n.type == kTypeFifo) {
+		pipebuf* p = (pipebuf*)g_fd[fd].n.internal;
+		if (p) {
+			if (g_fd[fd].flags & kPipeWriteEnd)
+				--p->writers;
+			else
+				--p->readers;
+
+			if (p->waiting) {
+				if ((g_fd[fd].flags & kPipeWriteEnd) || p->n)
+					task::unblock(p->waiting);
+				p->waiting = nullptr;
+			}
+			if (p->writers < 0)
+				p->writers = 0;
+			if (p->readers < 0)
+				p->readers = 0;
+
+			if (!p->writers && !p->readers)
+				p->open = 0;
+		}
+	}
 	memset(&g_fd[fd], 0, sizeof g_fd[fd]);
+}
+
+int fd_close(int fd) {
+	close_in(task::g_current, fd);
 	return 0;
+}
+
+void fd_close_all(task::task* t) {
+	if (!t)
+		return;
+	for (int i = 0; i < kMaxFd; ++i)
+		if (t->fd[i].n.type)
+			close_in(t, i);
+}
+
+// a new process has been handed a copy of this table, so it now holds every pipe end in it as well
+void fd_share(const ofile* fd) {
+	if (!fd || fd->n.type != kTypeFifo)
+		return;
+	pipebuf* p = (pipebuf*)fd->n.internal;
+	if (!p)
+		return;
+	if (fd->flags & kPipeWriteEnd)
+		++p->writers;
+	else
+		++p->readers;
 }
 
 int fd_read(int fd, void* buf, uint32_t len) {
@@ -428,6 +529,174 @@ int fd_write(int fd, const void* buf, uint32_t len) {
 	if (r > 0)
 		e->pos += (uint32_t)r;
 	return r;
+}
+
+// the pipes
+namespace {
+
+int pipe_rd(node* n, void* buf, uint32_t, uint32_t len) {
+	pipebuf* p = pipe_of(n);
+	if (!p)
+		return -1;
+
+	while (p->n == 0) {
+		if (!p->writers)
+			return 0; // every writer has gone
+		p->waiting = task::g_current;
+		task::block();
+		p->waiting = nullptr;
+	}
+	uint32_t got = 0;
+	while (got < len && p->n) {
+		((uint8_t*)buf)[got++] = p->buf[p->tail];
+		p->tail = (p->tail + 1u) % kPipeBytes;
+		--p->n;
+	}
+	// there is room again
+	if (p->waiting) {
+		task::unblock(p->waiting);
+		p->waiting = nullptr;
+	}
+	return (int)got;
+}
+
+int pipe_wr(node* n, const void* buf, uint32_t, uint32_t len) {
+	pipebuf* p = pipe_of(n);
+	if (!p)
+		return -1;
+	const uint8_t* s = (const uint8_t*)buf;
+	uint32_t put = 0;
+	while (put < len) {
+		if (p->n == kPipeBytes) {
+			// full so wait for a reader
+			if (!p->readers)
+				return -1;
+			p->waiting = task::g_current;
+			task::block();
+			p->waiting = nullptr;
+			if (!p->open)
+				return -1;
+			continue;
+		}
+		p->buf[p->head] = s[put++];
+		p->head = (p->head + 1u) % kPipeBytes;
+		++p->n;
+	}
+
+	// something to read
+	if (p->waiting) {
+		task::unblock(p->waiting);
+		p->waiting = nullptr;
+	}
+	return (int)put;
+}
+
+} // namespace
+
+int pipe(int ends[2]) {
+	ofile* g_fd = fds();
+	if (!g_fd || !ends)
+		return -1;
+	pipebuf* p = nullptr;
+	for (int i = 0; i < kMaxPipe; ++i)
+		if (!g_pipes[i].open) {
+			p = &g_pipes[i];
+			break;
+		}
+	if (!p)
+		return -1;
+	memset(p, 0, sizeof *p);
+	p->open = 1;
+	p->readers = 1;
+	p->writers = 1;
+
+	int r = -1;
+	int w = -1;
+	for (int i = 0; i < kMaxFd; ++i)
+		if (g_fd[i].n.type == 0) {
+			if (r < 0)
+				r = i;
+			else if (w < 0) {
+				w = i;
+				break;
+			}
+		}
+	if (r < 0 || w < 0)
+		return -1;
+	for (int i = 0; i < kMaxFd; ++i) {
+		ofile* e = &g_fd[i];
+		if (i != r && i != w)
+			continue;
+		memset(e, 0, sizeof *e);
+		e->n.type = kTypeFifo;
+		e->n.internal = p;
+		e->n.read = pipe_rd;
+		e->n.write = pipe_wr;
+		e->n.name = e->n.name_buf;
+		strncpy(e->n.name_buf, i == r ? "pipe_r" : "pipe_w", sizeof e->n.name_buf - 1);
+		e->flags = (i == r) ? 0u : kPipeWriteEnd;
+	}
+	ends[0] = r;
+	ends[1] = w;
+	return 0;
+}
+
+// put a descriptor of ours into another processes table as `child_fd`
+int fd_install(task::task* into, int child_fd, int from) {
+	if (!into || from < 0 || from >= kMaxFd || child_fd < 0 || child_fd >= kMaxFd)
+		return -1;
+	ofile* mine = fds();
+	if (!mine || !mine[from].n.type)
+		return -1;
+	ofile* theirs = &into->fd[child_fd];
+	memcpy(theirs, &mine[from], sizeof *theirs);
+	theirs->n.name = theirs->n.name_buf;
+	return child_fd;
+}
+
+int mem_wr(node* n, const void* buf, uint32_t, uint32_t len) {
+	memwin* m = (memwin*)n->internal;
+	if (!m)
+		return -1;
+	uint32_t room = m->wpos < m->cap ? m->cap - m->wpos : 0;
+	const uint32_t put = len < room ? len : room;
+	memcpy(m->buf + m->wpos, buf, put);
+	m->wpos += put;
+
+	return (int)put;
+}
+
+int fd_mem(void* buf, uint32_t size) {
+	ofile* g_fd = fds();
+	static memwin wins[4];
+	if (!g_fd || !buf || size == 0)
+		return -1;
+	memwin* m = nullptr;
+	for (int i = 0; i < 4; ++i)
+		if (!wins[i].buf) {
+			m = &wins[i];
+			break;
+		}
+	if (!m)
+		return -1;
+	m->buf = (uint8_t*)buf;
+	m->cap = size;
+	m->wpos = 0;
+	for (int i = 0; i < kMaxFd; ++i) {
+		if (g_fd[i].n.type)
+			continue;
+		ofile* e = &g_fd[i];
+		memset(e, 0, sizeof *e);
+		// write only
+		e->n.type = kTypeMem;
+		e->n.internal = m;
+		e->n.write = mem_wr;
+		e->n.name = e->n.name_buf;
+		strncpy(e->n.name_buf, "mem", sizeof e->n.name_buf - 1);
+		return i;
+	}
+	m->buf = nullptr;
+	return -1;
 }
 
 // whence 0 set, 1 cur, 2 end, returns the new offset

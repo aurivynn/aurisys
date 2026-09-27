@@ -43,4 +43,6 @@ int recv() {
 	return inb(COM1);
 }
 
+bool pending() { return (inb(COM1 + 5) & 1) != 0; }
+
 } // namespace serial

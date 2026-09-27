@@ -26,11 +26,9 @@ int readdir(int fd, uint32_t index, vfs_dirent* out) {
 	return (int)trp(SYS_readdir, (uint32_t)fd, index, (uint32_t)(uintptr_t)out, 0, 0);
 }
 int fstat(int fd, file_stat* out) { return (int)trp(SYS_fstat, (uint32_t)fd, (uint32_t)(uintptr_t)out, 0, 0, 0); }
-int writefile(const char* path, const void* buf, uint32_t len, uint32_t flags) {
-	return (int)trp(SYS_writefile, (uint32_t)(uintptr_t)path, (uint32_t)(uintptr_t)buf, len, flags, 0);
-}
 int mkdir(const char* path) { return (int)trp(SYS_mkdir, (uint32_t)(uintptr_t)path, 0, 0, 0, 0); }
-int rm(const char* path) { return (int)trp(SYS_rm, (uint32_t)(uintptr_t)path, 0, 0, 0, 0); }
+int unlink(const char* path) { return (int)trp(SYS_unlink, (uint32_t)(uintptr_t)path, 0, 0, 0, 0); }
+int pipe(int fds[2]) { return (int)trp(SYS_pipe, (uint32_t)(uintptr_t)fds, 0, 0, 0, 0); }
 int getcwd(char* buf, uint32_t size) { return (int)trp(SYS_cwd, (uint32_t)(uintptr_t)buf, size, 0, 0, 0); }
 int statfs(fs_stat* out) { return (int)trp(SYS_statfs, (uint32_t)(uintptr_t)out, 0, 0, 0, 0); }
 int meminfo(mem_stat* out) { return (int)trp(SYS_meminfo, (uint32_t)(uintptr_t)out, 0, 0, 0, 0); }

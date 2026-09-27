@@ -142,7 +142,6 @@ void vprint(const char* fmt, va_list ap) { print::vprintf(fd1_put, fmt, ap); }
 
 // wait for a key, keyboard first then serial
 int read_char() {
-	int spins = 0;
 	for (;;) {
 		cursor_tick();
 		int c = kbd::poll();
@@ -151,31 +150,537 @@ int read_char() {
 		c = serial::recv();
 		if (c >= 0)
 			return c;
-		if (++spins < 64)
-			continue;
-		spins = 0;
-		task::yield();
+		kbd::wait();
 	}
 }
 
-// split a line into argv (in place). returns argc, 0 = empty line
-int tokenize(char* line, const char** argv, int argv_max) {
-	int argc = 0;
-	char* p = line;
-	for (;;) {
-		while (*p == ' ')
-			++p;
-		if (!*p)
-			break;
-		if (argc >= argv_max)
-			break;
-		argv[argc++] = p;
-		while (*p && *p != ' ')
-			++p;
-		if (*p)
-			*p++ = 0;
+constexpr int kMaxStage = 4;
+constexpr int kMaxWord = 8;
+constexpr int kWordMax = 120;
+
+constexpr int kMaxNest = 4;
+
+using bank_t = char[kMaxStage][kMaxWord][kWordMax];
+
+static bank_t g_bank[kMaxNest + 1];
+
+static char g_var[8][32];
+static char g_val[8][64];
+static int g_nvar = 0;
+
+static const char* lookup_var(const char* name, int len) {
+	for (int i = 0; i < g_nvar; ++i)
+		if ((int)strlen(g_var[i]) == len && strncmp(g_var[i], name, (size_t)len) == 0)
+			return g_val[i];
+	return nullptr;
+}
+
+struct redir {
+	char kind; // 0 none, '>' truncate, 'a' append, '<' read
+	char path[kWordMax];
+};
+
+struct stage {
+	int argc;
+	const char* word[kMaxWord];
+	redir in, out;
+};
+
+struct scan {
+	char* p;
+};
+
+static int run_job(char** line, char* op, bool go, int depth);
+static bool builtin_cd(int argc, const char** argv);
+static bool builtin_kill(int argc, const char** argv);
+static bool builtin_export(int argc, const char** argv);
+static bool builtin_exit(int argc, const char** argv);
+
+static bool is_op(char c) { return c == '|' || c == '&' || c == ';' || c == '<' || c == '>' || c == '(' || c == ')'; }
+
+static void skip_blanks(scan& s) {
+	while (*s.p == ' ' || *s.p == '\t')
+		++s.p;
+}
+
+static const char* match_bracket(const char* p) {
+	int depth = 0;
+	for (; *p; ++p) {
+		if (*p == '(')
+			++depth;
+		else if (*p == ')' && --depth == 0)
+			return p;
 	}
-	return argc;
+	return nullptr;
+}
+
+static int substitute(const char* inner, int innern, char* out, int outsz, int depth) {
+	static char cap[512];
+	cap[0] = 0;
+	const int m = vfs::fd_mem(cap, sizeof cap - 1);
+	if (m < 0)
+		return 0;
+	char line[kLineMax + 1];
+	int n = innern > kLineMax ? kLineMax : innern;
+	for (int i = 0; i < n; ++i)
+		line[i] = inner[i];
+	line[n] = 0;
+
+	const int stash = vfs::kMaxFd - 1 - depth;
+	const int saved = vfs::dup2(1, stash);
+	vfs::dup2(m, 1);
+	char* q = line;
+	char op = 0;
+	run_job(&q, &op, true, depth);
+	vfs::fd_close(m);
+	if (saved >= 0) {
+		vfs::dup2(saved, 1);
+		vfs::fd_close(saved);
+	}
+	// the newline a command leaves at the end is not part of its answer
+	int len = 0;
+	while (len < (int)sizeof cap - 1 && cap[len])
+		++len;
+	while (len > 0 && (cap[len - 1] == '\n' || cap[len - 1] == '\r'))
+		--len;
+	int put = 0;
+	for (int i = 0; i < len && put < outsz - 1; ++i)
+		out[put++] = cap[i];
+	return put;
+}
+
+static int expand_dollar(const char** pp, char* out, int outsz, int depth) {
+	const char* p = *pp;
+	if (p[1] == '(') {
+		const char* close = match_bracket(p + 1);
+		if (!close)
+			return 0;
+		*pp = close + 1;
+		if (depth >= kMaxNest) {
+			terminal::printf("substitution nested too deeply\n");
+			return 0;
+		}
+		return substitute(p + 2, (int)(close - p - 2), out, outsz, depth + 1);
+	}
+	if ((p[1] >= 'a' && p[1] <= 'z') || (p[1] >= 'A' && p[1] <= 'Z') || p[1] == '_') {
+		int len = 0;
+		while ((p[1 + len] >= 'a' && p[1 + len] <= 'z') || (p[1 + len] >= 'A' && p[1 + len] <= 'Z') ||
+			   (p[1 + len] >= '0' && p[1 + len] <= '9') || p[1 + len] == '_')
+			++len;
+		*pp = p + 1 + len;
+		const char* v = lookup_var(p + 1, len);
+		if (!v)
+			return 0; // an unknown name is nothing at all
+		int n = 0;
+		for (; v[n] && n < outsz - 1; ++n)
+			out[n] = v[n];
+		return n;
+	}
+	*pp = p + 1;
+	if (outsz > 1) {
+		out[0] = '$';
+		return 1;
+	}
+	return 0;
+}
+
+static bool has_glob(const char* w) {
+	for (const char* p = w; *p; ++p)
+		if (*p == '*' || *p == '?')
+			return true;
+	return false;
+}
+
+static bool glob_match(const char* pat, const char* s) {
+	while (*pat) {
+		if (*pat == '*') {
+			++pat;
+			if (!*pat)
+				return true;
+			for (const char* t = s;; ++t) {
+				if (glob_match(pat, t))
+					return true;
+				if (!*t)
+					return false;
+			}
+		}
+		if (!*s)
+			return false;
+		if (*pat != '?' && *pat != *s)
+			return false;
+		++pat;
+		++s;
+	}
+	return !*s;
+}
+
+static int glob_stage(stage& cur, char words[kMaxWord][kWordMax], int slot) {
+	if (!has_glob(words[slot]))
+		return cur.argc;
+	const char* w = words[slot];
+	char dir[kWordMax];
+	const char* pat = w;
+	int dlen = 0;
+	for (const char* q = w; *q; ++q)
+		if (*q == '/') {
+			pat = q + 1;
+			dlen = (int)(q - w) + 1;
+		}
+	for (int i = 0; i < dlen && i < kWordMax - 1; ++i)
+		dir[i] = w[i];
+	dir[dlen] = 0;
+	if (!dlen) {
+		dir[0] = '.';
+		dir[1] = 0;
+	}
+	vfs::node* d = vfs::resolve(dir);
+	if (!d)
+		return cur.argc;
+	char hits[kMaxWord][kWordMax];
+	int nh = 0;
+	for (uint32_t i = 0; i < 64 && nh < kMaxWord - slot; ++i) {
+		vfs::node e;
+		if (vfs::readdir(d, i, &e) != 0)
+			break;
+		// . and .. are never handed back by a glob, whatever they match
+		if ((e.name[0] == '.' && (e.name[1] == 0 || (e.name[1] == '.' && e.name[2] == 0))) || !glob_match(pat, e.name))
+			continue;
+		int n = 0;
+		for (int k = 0; dir[k] && n < kWordMax - 2; ++k)
+			hits[nh][n++] = dir[k];
+		for (const char* q = e.name; *q && n < kWordMax - 1; ++q)
+			hits[nh][n++] = *q;
+		hits[nh][n] = 0;
+		++nh;
+	}
+	if (nh == 0)
+		return cur.argc;
+
+	for (int k = kMaxWord - 1; k >= slot + nh; --k)
+		cur.word[k] = cur.word[k - nh];
+	for (int k = 0; k < nh; ++k)
+		cur.word[slot + k] = hits[k];
+	cur.argc += nh - 1;
+	return cur.argc;
+}
+
+static bool read_word(scan& s, char* out, int outsz, int depth) {
+	skip_blanks(s);
+	int n = 0;
+	bool any = false;
+
+	while (*s.p && *s.p != ' ' && *s.p != '\t' && !is_op(*s.p)) {
+		any = true;
+		if (*s.p == '\'') {
+			++s.p;
+			while (*s.p && *s.p != '\'' && n < outsz - 1)
+				out[n++] = *s.p++;
+			if (*s.p == '\'')
+				++s.p;
+			continue;
+		}
+		if (*s.p == '"') {
+			++s.p;
+
+			while (*s.p && *s.p != '"') {
+				if (n >= outsz - 1)
+					break;
+				if (*s.p == '\\' && s.p[1]) {
+					++s.p;
+					out[n++] = *s.p++;
+					continue;
+				}
+				if (*s.p == '$') {
+					const char* q = s.p;
+					n += expand_dollar(&q, out + n, outsz - n, depth);
+					s.p = (char*)q;
+					continue;
+				}
+				out[n++] = *s.p++;
+			}
+			if (*s.p == '"')
+				++s.p;
+			continue;
+		}
+		if (*s.p == '$') {
+			any = true;
+			const char* q = s.p;
+			n += expand_dollar(&q, out + n, outsz - n, depth);
+			s.p = (char*)q;
+			continue;
+		}
+		if (*s.p == '\\' && s.p[1])
+			++s.p;
+		if (n < outsz - 1)
+			out[n++] = *s.p++;
+		else
+			++s.p;
+	}
+	out[n] = 0;
+	return any;
+}
+
+static char read_op(scan& s) {
+	skip_blanks(s);
+	if (!*s.p)
+		return 0;
+	const char c = *s.p;
+	if ((c == '&' || c == '|' || c == '>') && s.p[1] == c)
+		++s.p;
+	++s.p;
+	return c;
+}
+
+static int open_for(const redir& r, bool write) {
+	if (!r.kind)
+		return -1;
+	if (!write)
+		return vfs::fd_open(r.path, O_RDONLY);
+	const uint32_t mode = O_WRONLY | O_CREAT | (r.kind == 'a' ? O_APPEND : O_TRUNC);
+	return vfs::fd_open(r.path, mode);
+}
+
+static bool which(const char* name, char* out, int outsz) {
+	if (vfs::find_in_path(name, out, outsz))
+		return true;
+	if (!strchr(name, '/'))
+		return false;
+	strncpy(out, name, outsz - 1);
+	out[outsz - 1] = 0;
+	return true;
+}
+
+static int run_alone(stage& s) {
+	uint32_t code = 0;
+	char pp[256];
+	if (!which(s.word[0], pp, sizeof pp)) {
+		terminal::printf("unknown command: %s\n", s.word[0]);
+		return 127;
+	}
+	int saved[2] = {-1, -1};
+	if (s.in.kind) {
+		const int fd = open_for(s.in, false);
+		if (fd < 0) {
+			terminal::printf("%s: %s: no such file\n", s.word[0], s.in.path);
+			return 1;
+		}
+		saved[0] = vfs::dup2(0, 9);
+		vfs::dup2(fd, 0);
+		vfs::fd_close(fd);
+	}
+	if (s.out.kind) {
+		const int fd = open_for(s.out, true);
+		if (fd < 0) {
+			terminal::printf("%s: %s: cannot write\n", s.word[0], s.out.path);
+			return 1;
+		}
+		saved[1] = vfs::dup2(1, 10);
+		vfs::dup2(fd, 1);
+		vfs::fd_close(fd);
+	}
+	if (saved[0] >= 0 || saved[1] >= 0) {
+		if (!exec::run(pp, s.argc, s.word, &code)) {
+			terminal::printf("unknown command: %s\n", s.word[0]);
+			code = 127;
+		}
+		if (saved[0] >= 0) {
+			vfs::dup2(saved[0], 0);
+			vfs::fd_close(saved[0]);
+		}
+		if (saved[1] >= 0) {
+			vfs::dup2(saved[1], 1);
+			vfs::fd_close(saved[1]);
+		}
+	} else if (!exec::run(pp, s.argc, s.word, &code)) {
+		terminal::printf("unknown command: %s\n", s.word[0]);
+		code = 127;
+	}
+	return (int)code;
+}
+
+static int run_pipeline(stage* st, int n, bool background) {
+	int pf[kMaxStage - 1][2];
+	int status = 0;
+
+	for (int i = 0; i + 1 < n; ++i)
+		if (vfs::pipe(pf[i])) {
+			terminal::printf("pipe: no room for a pipe\n");
+			return 1;
+		}
+
+	for (int i = 0; i < n; ++i) {
+		stage& s = st[i];
+
+		int infd = -1;
+		if (i > 0)
+			infd = pf[i - 1][0];
+		else if (s.in.kind)
+			infd = open_for(s.in, false);
+
+		int outfd = -1;
+		if (i + 1 < n)
+			outfd = pf[i][1];
+		else if (s.out.kind)
+			outfd = open_for(s.out, true);
+
+		if (i + 1 == n && !background) {
+			const bool had_in = s.in.kind != 0;
+			const bool had_out = s.out.kind != 0;
+			int saved[2] = {-1, -1};
+			if (infd >= 0) {
+				saved[0] = vfs::dup2(0, 9);
+				vfs::dup2(infd, 0);
+			}
+			if (outfd >= 0) {
+				saved[1] = vfs::dup2(1, 10);
+				vfs::dup2(outfd, 1);
+			}
+			s.in.kind = 0;
+			s.out.kind = 0;
+			status = run_alone(s);
+			if (saved[0] >= 0) {
+				vfs::dup2(saved[0], 0);
+				vfs::fd_close(saved[0]);
+			}
+			if (saved[1] >= 0) {
+				vfs::dup2(saved[1], 1);
+				vfs::fd_close(saved[1]);
+			}
+
+			if (infd >= 0 && (i > 0 || had_in))
+				vfs::fd_close(infd);
+			if (outfd >= 0 && had_out)
+				vfs::fd_close(outfd);
+			continue;
+		}
+
+		char pp[256];
+		if (!which(s.word[0], pp, sizeof pp)) {
+			terminal::printf("unknown command: %s\n", s.word[0]);
+			for (int k = 0; k < n - 1; ++k) {
+				vfs::fd_close(pf[k][0]);
+				vfs::fd_close(pf[k][1]);
+			}
+			return 127;
+		}
+		exec::fdmap map[3];
+		int nmap = 0;
+		if (infd >= 0)
+			map[nmap++] = {0, infd};
+		if (outfd >= 0)
+			map[nmap++] = {1, outfd};
+
+		const uint32_t pid = exec::spawn_mapped(pp, s.argc, s.word, map, nmap);
+		if (!pid) {
+			terminal::printf("%s: could not start\n", s.word[0]);
+			status = 127;
+		}
+		if (infd >= 0 && (i == 0 || s.in.kind))
+			vfs::fd_close(infd);
+		if (outfd >= 0)
+			vfs::fd_close(outfd);
+
+		if (i > 0)
+			vfs::fd_close(pf[i - 1][0]);
+		if (background)
+			terminal::printf("[%u] %s\n", pid, pp);
+	}
+	if (background)
+		return 0;
+	return status;
+}
+
+static int run_job(char** line, char* op, bool go, int depth) {
+	bank_t* bank = &g_bank[depth];
+	stage st[kMaxStage];
+	int nstage = 0;
+	bool background = false;
+	scan s = {*line};
+	memset(st, 0, sizeof st);
+
+	for (;;) {
+		stage& cur = st[nstage];
+		memset(&cur, 0, sizeof cur);
+
+		int slot = 0;
+		for (;;) {
+			skip_blanks(s);
+			if (!*s.p)
+				break;
+			char c = *s.p;
+
+			if (c == '>' || c == '<') {
+				const char kind = c;
+				++s.p;
+				if (kind == '>' && *s.p == '>') {
+					++s.p; // >> appends
+					cur.out.kind = 'a';
+				} else if (kind == '<') {
+					cur.in.kind = '<';
+				} else {
+					cur.out.kind = '>';
+				}
+				char* where = kind == '<' ? cur.in.path : cur.out.path;
+				if (!read_word(s, where, kWordMax, depth))
+					terminal::printf("syntax error: %c with nothing after it\n", kind);
+				continue;
+			}
+			if (is_op(c) || c == '&')
+				break;
+			if (slot >= kMaxWord) {
+				// too many words for one stage
+				while (*s.p && !is_op(*s.p) && *s.p != '&')
+					++s.p;
+				continue;
+			}
+			if (read_word(s, (*bank)[nstage][slot], kWordMax, depth)) {
+				cur.word[cur.argc++] = (*bank)[nstage][slot];
+				++slot;
+				slot = cur.argc = glob_stage(cur, (*bank)[nstage], slot - 1);
+			}
+		}
+		skip_blanks(s);
+		// a stage with no words is not a stage
+		if (cur.argc == 0)
+			break;
+		++nstage;
+
+		if (*s.p == '|' && s.p[1] != '|') {
+			++s.p;
+			if (nstage >= kMaxStage) {
+				terminal::printf("too many stages in a pipeline\n");
+				while (*s.p && *s.p != ';' && *s.p != '&')
+					++s.p;
+				break;
+			}
+			continue;
+		}
+		break;
+	}
+
+	if (*s.p == '&' && s.p[1] != '&') {
+		background = true;
+		++s.p;
+	}
+	*op = read_op(s);
+
+	*line = s.p;
+	if (nstage == 0)
+		return 0;
+	if (!go)
+		return 0;
+
+	if (nstage == 1 && !st[0].in.kind && !st[0].out.kind) {
+		if (builtin_cd(st[0].argc, st[0].word))
+			return 0;
+		if (builtin_kill(st[0].argc, st[0].word))
+			return 0;
+		if (builtin_export(st[0].argc, st[0].word))
+			return 0;
+		if (builtin_exit(st[0].argc, st[0].word))
+			return 0;
+	}
+	return run_pipeline(st, nstage, background);
 }
 
 // cd stays a builtin because there is no chdir syscall yet
@@ -190,26 +695,6 @@ bool builtin_cd(int argc, const char** argv) {
 	if (!task::chdir(where))
 		terminal::printf("cd: %s: not a directory\n", where);
 	return true;
-}
-
-bool exec_command(const char* name, int argc, const char** argv, bool background) {
-	char pp[256];
-	bool found = vfs::find_in_path(name, pp, sizeof pp);
-	if (!found && strchr(name, '/')) {
-		strncpy(pp, name, sizeof pp - 1);
-		pp[sizeof pp - 1] = 0;
-		found = true;
-	}
-	if (!found)
-		return false;
-
-	if (background) {
-		const uint32_t pid = exec::spawn(pp, argc, argv);
-		if (pid)
-			terminal::printf("[%u] %s\n", pid, pp);
-		return true;
-	}
-	return exec::run(pp, argc, argv, nullptr); // prints its own errors
 }
 
 int match_ci(const char* a, const char* b) {
@@ -267,26 +752,76 @@ bool builtin_kill(int argc, const char** argv) {
 	return true;
 }
 
-void run_line(char* line) {
-	const char* argv[8];
-	int argc = tokenize(line, argv, 8);
-	if (argc == 0)
-		return;
-
-	bool background = false;
-	if (argc > 1 && strcmp(argv[argc - 1], "&") == 0)
-		background = true, --argc;
-	if (argc == 0)
-		return;
-	if (!background) {
-		if (builtin_cd(argc, argv))
-			return;
-		if (builtin_kill(argc, argv))
-			return;
+bool builtin_export(int argc, const char** argv) {
+	if (strcmp(argv[0], "export") != 0)
+		return false;
+	if (argc < 2 || argc > 3) {
+		terminal::printf("usage: export NAME[=VALUE]\n");
+		return true;
 	}
-	if (exec_command(argv[0], argc, argv, background))
-		return;
-	terminal::printf("unknown command: %s\n", argv[0]);
+	const char* eq = strchr(argv[1], '=');
+	const char* name = argv[1];
+	char value[64] = {0};
+	if (eq) {
+		const int nl = (int)(eq - argv[1]);
+		if (nl > 30) {
+			terminal::printf("export: %s: name too long\n", argv[1]);
+			return true;
+		}
+		for (int i = 0; i < nl; ++i)
+			((char*)name)[i] = eq[i]; // terminate over the '='
+		strncpy(value, eq + 1, sizeof value - 1);
+	}
+	for (int i = 0; i < g_nvar; ++i)
+		if (strcmp(g_var[i], name) == 0) {
+			strncpy(g_val[i], value, sizeof g_val[0] - 1);
+			g_val[i][sizeof g_val[0] - 1] = 0;
+			return true;
+		}
+	if (g_nvar >= 8) {
+		terminal::printf("export: too many variables\n");
+		return true;
+	}
+	strncpy(g_var[g_nvar], name, sizeof g_var[0] - 1);
+	strncpy(g_val[g_nvar], value, sizeof g_val[0] - 1);
+	++g_nvar;
+	return true;
+}
+
+bool builtin_exit(int argc, const char** argv) {
+	if (strcmp(argv[0], "exit") != 0)
+		return false;
+	int code = 0;
+	if (argc >= 2) {
+		code = 0;
+		for (const char* p = argv[1]; *p >= '0' && *p <= '9'; ++p)
+			code = code * 10 + (*p - '0');
+	}
+
+	terminal::printf("\n");
+	terminal::printf("aurisys: halted\n");
+	for (;;)
+		asm volatile("cli; hlt");
+}
+
+void run_line(char* line) {
+	int status = 0;
+	bool go = true;
+	for (;;) {
+		char op = 0;
+		status = run_job(&line, &op, go, 0);
+		if (op == 0)
+			break;
+
+		if (op == ';')
+			go = true;
+		else if (op == '&')
+			go = status == 0;
+		else if (op == '|')
+			go = status != 0;
+		else
+			break;
+	}
 }
 
 void prompt() {

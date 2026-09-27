@@ -17,19 +17,20 @@ enum {
 	SYS_exit,
 	SYS_brk,  // move the process break
 	SYS_sbrk, // move the break by a delta
-	SYS_writefile,
 	SYS_mkdir,
-	SYS_rm,
+	SYS_unlink,
 	SYS_fstat,
 	SYS_cwd,
 	SYS_statfs,
 	SYS_meminfo,
 	SYS_uptime,
 	SYS_panic,
+	SYS_pipe,
 };
 
 enum { kTypeFile = 1, kTypeDir = 2, kTypeChar = 3 };
 
+constexpr uint32_t O_RDONLY = 0u; // opening for reading is the absence of bits
 constexpr uint32_t O_WRONLY = 1u;
 constexpr uint32_t O_RDWR = 2u;
 constexpr uint32_t O_CREAT = 0100u;	  // 64

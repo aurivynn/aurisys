@@ -2,6 +2,7 @@
 
 #include "arch/isr.h"
 #include "drivers/pic.h"
+#include "task.h"
 
 #include <stdint.h>
 
@@ -41,6 +42,8 @@ void irq_handler(Registers*) {
 		g_buf[g_head] = sc;
 		g_head = next;
 	}
+
+	kbd::wake();
 }
 
 // 0x0E backspace, 0x1C enter, 0x1D ctrl, 0x2A/0x36 shift
@@ -80,6 +83,41 @@ namespace kbd {
 void init() {
 	irq_install(1, irq_handler);
 	pic::unmask(1);
+}
+
+constexpr int kWaitMax = 4;
+static task::task* g_wait[kWaitMax];
+
+void wake() {
+	for (int i = 0; i < kWaitMax; ++i) {
+		task::task* t = g_wait[i];
+		g_wait[i] = nullptr;
+		if (t)
+			task::unblock(t);
+	}
+}
+
+void wait() {
+	task::task* t = task::g_current;
+	if (!t)
+		return;
+	for (int i = 0; i < kWaitMax; ++i)
+		if (!g_wait[i]) {
+			g_wait[i] = t;
+			break;
+		}
+
+	if (g_head == g_tail)
+		t->state = task::kBlocked;
+
+	if (g_head != g_tail && t->state == task::kBlocked)
+		t->state = task::kReady;
+
+	if (t->state == task::kBlocked)
+		task::yield();
+	for (int i = 0; i < kWaitMax; ++i)
+		if (g_wait[i] == t)
+			g_wait[i] = nullptr;
 }
 
 int poll() {

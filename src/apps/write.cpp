@@ -28,19 +28,26 @@ int main(int argc, char** argv) {
 		for (const char* s = argv[i]; *s && n < sizeof buf; ++s)
 			buf[n++] = *s;
 	}
-	const int fd = open(argv[first], 0);
-	if (fd >= 0) {
-		file_stat st;
-		if (fstat(fd, &st) == 0 && st.type == kTypeChar) {
-			write(fd, buf, n);
-			printf("wrote %u bytes to %s\n", n, argv[first]);
-			close(fd);
-			return 0;
-		}
-		close(fd);
+
+	flags |= O_WRONLY | O_CREAT;
+	if (!(flags & O_APPEND))
+		flags |= O_TRUNC;
+	const int fd = open(argv[first], flags);
+	if (fd < 0) {
+		printf("write: %s: cannot open\n", argv[first]);
+		return 1;
 	}
-	if (writefile(argv[first], buf, n, flags) < 0) {
-		printf("write: failed (exists? out of space?)\n");
+	file_stat st;
+	if (fstat(fd, &st) == 0 && st.type == kTypeChar) {
+		write(fd, buf, n);
+		close(fd);
+		printf("wrote %u bytes to %s\n", n, argv[first]);
+		return 0;
+	}
+	const int wrote = write(fd, buf, n);
+	close(fd);
+	if (wrote < 0) {
+		printf("write: %s: failed (out of space?)\n", argv[first]);
 		return 1;
 	}
 	printf("wrote %u bytes to %s\n", n, argv[first]);

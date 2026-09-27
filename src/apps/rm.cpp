@@ -6,7 +6,7 @@ int main(int argc, char** argv) {
 		return 1;
 	}
 	for (int i = 1; i < argc; ++i) {
-		const int r = rm(argv[i]);
+		const int r = unlink(argv[i]);
 		if (r == 1) {
 			printf("rm: %s: is a mount point\n", argv[i]);
 			return 1;

@@ -4,6 +4,10 @@
 
 #include <stdint.h>
 
+namespace task {
+struct task;
+}
+
 namespace vfs {
 
 struct node;
@@ -49,6 +53,8 @@ struct ofile {
 };
 
 constexpr int kMaxFd = 16;
+constexpr uint8_t kTypeFifo = 4; // a pipe end
+constexpr uint8_t kTypeMem = 5;	 // a window onto memory the caller owns
 
 int fd_open(const char* path, uint32_t flags);
 int fd_close(int fd);
@@ -56,7 +62,22 @@ int fd_read(int fd, void* buf, uint32_t len);
 int fd_write(int fd, const void* buf, uint32_t len);
 int lseek(int fd, int off, int whence); // 0 set, 1 cur, 2 end, new offset out
 int dup2(int old, int nw);				// point nw at old, closing nw first
+int fd_install(task::task* into, int child_fd, int from);
+
+int fd_mem(void* buf, uint32_t size);
 node* fd_node(int fd);
+
+void fd_close_all(task::task* t);
+
+void fd_share(const ofile* fd);
+
+int pipe(int fds[2]);
+
+constexpr int kMaxPipe = 8;
+constexpr uint32_t kPipeBytes = 4096;
+
+// a private bit on the ofile saying which end of a pipe it is.
+constexpr uint32_t kPipeWriteEnd = 0x10000u;
 
 const char* path();												// the PATH string, colon separated
 bool find_in_path(const char* name, char* out, uint32_t outsz); // first hit wins

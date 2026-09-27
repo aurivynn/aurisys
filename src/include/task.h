@@ -96,8 +96,12 @@ task* init(); // pid 1, the shell
 
 // scheduler
 
-void schedule();			// give up the cpu, come back when picked again
-void yield();				// same thing, spelled for callers that block
+void schedule(); // give up the cpu, come back when picked again
+void yield();	 // same thing, spelled for callers that block
+
+// off the run queue until somebody unblocks us, and back on it when they do
+void block();
+void unblock(task* t);
 void on_tick();				// the pit handler calls this
 bool preempt(Registers* r); // true if the tick took the cpu away
 int runnable();				// how many are ready, for the boot test

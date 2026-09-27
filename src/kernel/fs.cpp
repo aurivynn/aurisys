@@ -769,6 +769,79 @@ bool write_file(const char* base, const char* path, const void* data, uint32_t l
 	return commit_counts((int)used - (int)freed, 0, 0);
 }
 
+// write into a file at an offset
+bool write_at(uint32_t ino, const void* buf, uint32_t off, uint32_t len) {
+	if (!g_mounted || !ino || (len && !buf))
+		return false;
+	if (!load_inode(ino) || !inode_is_file())
+		return false;
+	if (r16(g_ino + 0x2E) != 0)
+		return false; // only the flat depth 0 layout, same as everything else
+	const uint8_t* s = (const uint8_t*)buf;
+	uint32_t old_size = inode_size();
+
+	if (off > old_size) {
+		uint8_t zero[512];
+		memset(zero, 0, sizeof zero);
+		for (uint32_t at = old_size; at < off;) {
+			const uint32_t room = g_bs - (at % g_bs);
+			const uint32_t chunk = (off - at) < room ? (off - at) : room;
+			if (!write_at(ino, zero, at, chunk))
+				return false;
+			at += chunk;
+		}
+		old_size = inode_size(); // the fill moved it
+	}
+
+	uint32_t done = 0;
+	uint32_t alloc_total = 0;
+	while (done < len) {
+		const uint32_t at = off + done;
+		const uint32_t lblock = at / g_bs;
+		const uint32_t inblk = at % g_bs;
+		uint32_t chunk = g_bs - inblk;
+		if (chunk > len - done)
+			chunk = len - done;
+		uint32_t phys;
+		if (!map_lblock(lblock, &phys)) {
+			if (at < old_size)
+				return false;
+			if (r16(g_ino + 0x2A) >= 4)
+				return false;
+
+			const uint32_t start = lblock * g_bs;
+			const uint32_t need = (off + len - start + g_bs - 1) / g_bs;
+			if (need == 0 || need > 32767)
+				return false;
+			uint32_t first;
+			if (!alloc_blocks(need, &first))
+				return false;
+			const uint16_t e = r16(g_ino + 0x2A);
+			const uint32_t ee = 0x34 + (uint32_t)e * 12;
+			w32(g_ino + ee, lblock);
+			w16(g_ino + ee + 4, (uint16_t)need);
+			w32(g_ino + ee + 8, first);
+			w16(g_ino + 0x2A, (uint16_t)(e + 1));
+			w32(g_ino + 0x1C, r32(g_ino + 0x1C) + need * (g_bs >> 9));
+			alloc_total += need;
+			// the loop comes round again and map_lblock finds it now
+			continue;
+		}
+		if (!read_block(phys, g_b1))
+			return false;
+		memcpy(g_b1 + inblk, s + done, chunk);
+		if (!write_block(phys, g_b1))
+			return false;
+		done += chunk;
+	}
+	if (off + len > old_size)
+		w32(g_ino + 4, off + len);
+	if (!store_inode(ino))
+		return false;
+
+	return commit_counts((int)alloc_total, 0, 0);
+}
+
 bool mkdir(const char* base, const char* path) {
 	if (!g_mounted || !path)
 		return false;

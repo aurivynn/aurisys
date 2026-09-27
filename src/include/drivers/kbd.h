@@ -19,4 +19,7 @@ enum Key : int {
 void init(); // installs the irq1 handler + unmask
 int poll();	 // next key: ascii, a Key, or -1 if nothing queued
 
+void wait();
+void wake(); // a key arrived, or one is about to
+
 } // namespace kbd

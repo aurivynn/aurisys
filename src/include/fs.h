@@ -28,6 +28,8 @@ void summary(uint32_t* block_size, uint32_t* blocks, uint32_t* free_blocks, uint
 			 uint32_t* feat_compat, uint32_t* feat_incompat, uint32_t* feat_ro);
 
 bool write_file(const char* base, const char* path, const void* data, uint32_t len, uint32_t flags);
+// write into an open file at an offset
+bool write_at(uint32_t ino, const void* buf, uint32_t off, uint32_t len);
 bool mkdir(const char* base, const char* path);
 bool rm(const char* base, const char* path);
 

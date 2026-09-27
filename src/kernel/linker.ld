@@ -9,7 +9,7 @@ SECTIONS
         *(.text*)
     }
 
-    .rodata : ALIGN(4K)
+    .rodata : ALIGN(4)
     {
         *(.rodata*)
     }

@@ -110,7 +110,9 @@ bool map_image(task::task* t) {
 } // namespace
 
 // read the elf, build the process, leave it runnable. returns its pid or 0
-uint32_t spawn(const char* path, int argc, const char** argv) {
+uint32_t spawn(const char* path, int argc, const char** argv) { return spawn_mapped(path, argc, argv, nullptr, 0); }
+
+uint32_t spawn_mapped(const char* path, int argc, const char** argv, const fdmap* map, int nmap) {
 	if (argc < 0 || argc > 16)
 		return 0;
 	const int fd = vfs::fd_open(path, 0);
@@ -192,11 +194,18 @@ uint32_t spawn(const char* path, int argc, const char** argv) {
 	r.user_ss = kSelUserData;
 	r.esp_dummy = esp; // the slot pushad drops, keep it pointing somewhere sane
 	t->regs = r;
+
+	for (int i = 0; i < nmap; ++i)
+		vfs::fd_install(t, map[i].child_fd, map[i].from);
 	return t->pid;
 }
 
 bool run(const char* path, int argc, const char** argv, uint32_t* exit_code) {
-	const uint32_t pid = spawn(path, argc, argv);
+	return run_mapped(path, argc, argv, nullptr, 0, exit_code);
+}
+
+bool run_mapped(const char* path, int argc, const char** argv, const fdmap* map, int nmap, uint32_t* exit_code) {
+	const uint32_t pid = spawn_mapped(path, argc, argv, map, nmap);
 	if (pid == 0)
 		return false;
 

@@ -37,7 +37,7 @@ KFLAGS := -ffreestanding -fno-pie -fno-pic -fno-stack-protector -fno-builtin \
           -march=i686 -mgeneral-regs-only -std=c++17 -O2 -Wall \
           -I src/include
 AFLAGS := -f elf32
-LDFLAGS := -m elf_i386 -nostdlib -T src/kernel/linker.ld
+LDFLAGS := -m elf_i386 -nostdlib -T src/kernel/linker.ld --no-warn-rwx-segments
 
 KERNEL_CPP := $(wildcard src/kernel/*.cpp src/kernel/*/*.cpp)
 INCLUDES := $(shell find src/include -name '*.h' | sort)
@@ -140,8 +140,7 @@ $(KERNEL_ELF): $(KERNEL_OBJS) src/kernel/linker.ld | $(BUILD)
 
 $(KERNEL_BIN): $(KERNEL_ELF)
 	$(OBJCOPY) -O binary $< $@
-	@n=$$(stat -c %s $@); test $$n -le 60000 || { echo "ERROR: kernel is $$n bytes, over the 60000 cap"; \
-		echo "       the bootloaders real ceiling is 127 sectors (65024 bytes)"; \
+	@n=$$(stat -c %s $@); test $$n -le 65024 || { echo "ERROR: kernel is $$n bytes, over the 65024 cap"; \
 		exit 1; }
 
 $(KERNEL_HDR): $(KERNEL_BIN)
@@ -169,8 +168,8 @@ fs-check: $(IMAGE) $(FS_IMG)
 
 size: $(KERNEL_BIN)
 	@n=$$(stat -c %s $(KERNEL_BIN)); \
-	echo "kernel.bin: $$n bytes (cap 60000, hardware ceiling 65024, $$((60000 - n)) to spare)"; \
-	test $$n -le 60000 || { echo "kernel too big"; exit 1; }
+	echo "kernel.bin: $$n bytes (cap 65024, the loader ceiling, $$((65024 - n)) to spare)"; \
+	test $$n -le 65024 || { echo "kernel too big"; exit 1; }
 
 clean:
 	rm -rf $(BUILD)

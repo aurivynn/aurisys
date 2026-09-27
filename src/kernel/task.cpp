@@ -2,6 +2,8 @@
 
 #include "arch/gdt.h"
 #include "fs.h"
+#include "drivers/kbd.h"
+#include "drivers/serial.h"
 #include "lib/heap.h"
 #include "lib/mem.h"
 #include "lib/str.h"
@@ -258,8 +260,12 @@ void switch_to(task* to) {
 extern "C" void task_switch_now() {
 	reap();
 	task* to = pick();
-	if (!to)
+	if (!to) {
+		// nobody is runnable
+		if (g_current->state == kBlocked)
+			__asm__ volatile("sti; hlt");
 		return;
+	}
 	switch_to(to);
 }
 
@@ -272,28 +278,49 @@ void schedule() {
 
 void yield() { schedule(); }
 
+// off the run queue until somebody unblocks us
+void block() {
+	task* t = g_current;
+	if (!t || t->state == kBlocked)
+		return;
+	t->state = kBlocked;
+	schedule();
+}
+
+void unblock(task* t) {
+	if (t && t->state == kBlocked)
+		t->state = kReady;
+}
+
 void on_tick() {
 	task* t = g_current;
 	if (t)
 		++t->utime;
+	if (serial::pending())
+		kbd::wake();
 }
 
 bool preempt(Registers* r) {
 	task* t = g_current;
-	if (!t || t->pid == kPid1)
+	if (!t)
 		return false;
 
-	if ((r->cs & 3u) != 3u)
-		return false;
+	const bool dead = t->state == kZombie || t->state == kKilled;
 
-	if (t->quantum && --t->quantum)
-		return false;
+	if (!dead) {
+		if ((r->cs & 3u) != 3u)
+			return false;
+		if (t->quantum && --t->quantum)
+			return false;
+	}
 	reap();
 	task* to = pick();
 	if (!to || to == t)
 		return false;
 
-	t->regs = *r;
+	// a corpse is never coming back
+	if (!dead)
+		t->regs = *r;
 	switch_to(to);
 	return true;
 }
