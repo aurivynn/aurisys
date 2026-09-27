@@ -284,9 +284,48 @@ static int expand_dollar(const char** pp, char* out, int outsz, int depth) {
 	return 0;
 }
 
+static const char* class_end(const char* p) {
+	++p;
+	if (*p == '!' || *p == '^')
+		++p;
+	if (*p == ']')
+		++p;
+	for (; *p; ++p)
+		if (*p == ']')
+			return p;
+	return nullptr;
+}
+
+static bool class_match(const char** pp, char c) {
+	const char* end = class_end(*pp);
+	if (!end)
+		return false;
+	const char* p = *pp + 1;
+	bool neg = false;
+	if (*p == '!' || *p == '^') {
+		neg = true;
+		++p;
+	}
+	bool hit = false;
+	for (; p < end; ++p) {
+		if (p[1] == '-' && p + 2 < end) {
+			if ((unsigned char)*p <= (unsigned char)c && (unsigned char)c <= (unsigned char)p[2])
+				hit = true;
+			p += 2;
+			continue;
+		}
+		if (*p == c)
+			hit = true;
+	}
+	*pp = end + 1;
+	return neg ? !hit : hit;
+}
+
 static bool has_glob(const char* w) {
 	for (const char* p = w; *p; ++p)
 		if (*p == '*' || *p == '?')
+			return true;
+		else if (*p == '[' && class_end(p))
 			return true;
 	return false;
 }
@@ -306,6 +345,14 @@ static bool glob_match(const char* pat, const char* s) {
 		}
 		if (!*s)
 			return false;
+		if (*pat == '[' && class_end(pat)) {
+			const char* q = pat;
+			if (!class_match(&q, *s))
+				return false;
+			pat = q;
+			++s;
+			continue;
+		}
 		if (*pat != '?' && *pat != *s)
 			return false;
 		++pat;
@@ -336,7 +383,14 @@ static int glob_stage(stage& cur, char words[kMaxWord][kWordMax], int slot) {
 	vfs::node* d = vfs::resolve(dir);
 	if (!d)
 		return cur.argc;
-	char hits[kMaxWord][kWordMax];
+
+	// the words a stage runs are pointers, and these point into hits, so hits
+	// has to outlive this function. it used to be on the stack, which meant the
+	// program got whatever the next call put there, and a glob quietly turned
+	// into the name of the program being run. the shell parses one command at a
+	// time and nothing below here starts another parse, so a single static is
+	// enough
+	static char hits[kMaxWord][kWordMax];
 	int nh = 0;
 	for (uint32_t i = 0; i < 64 && nh < kMaxWord - slot; ++i) {
 		vfs::node e;
