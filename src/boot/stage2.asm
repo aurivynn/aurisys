@@ -488,6 +488,52 @@ store_bootinfo:
     pop ax
     ret
 
+STAGE_START equ 0x00010200
+STAGE_TOP equ 0x00100000
+stage_limit:
+    mov cx, [mem_count]
+    mov bx, 0x3000 ; the e820 entries, twenty bytes each
+.scan:
+    test cx, cx
+    jz  .fallback
+    cmp dword [bx + 16], 1 ; type 1 is usable
+    jne .next
+    mov eax, [bx + 0] ; base
+    mov edx, [bx + 4]
+    test edx, edx
+    jnz .next ; starts above 4GB, not for us
+    cmp eax, STAGE_START
+    ja  .next
+
+    cmp dword [bx + 12], 0
+    jne .next ; length above 4GB, nonsense for low memory
+    add eax, [bx + 8] ; end of the region
+    adc edx, [bx + 12]
+    cmp eax, STAGE_START
+    jbe .next ; ends below us
+    cmp eax, STAGE_TOP
+    jbe .fits
+    mov eax, STAGE_TOP ; the segment:offset ceiling
+.fits:
+    mov [stage_end], eax
+    mov eax, [stage_end]
+    sub eax, STAGE_START ; room is the top of the region less where we start
+    mov [stage_room], eax
+    ret
+.next:
+    add bx, 20
+    dec cx
+    jmp .scan
+.fallback:
+    xor eax, eax
+    mov ax, 0x0002
+    mov [stage_end + 2], ax
+    mov [stage_end], ax
+    mov ax, 0xFE00
+    mov [stage_room], ax
+    mov word [stage_room + 2], 0
+    ret
+
 ; load the kernel: header at LBA 9, kernel at LBA 10+ into 0x10000
 load_kernel:
     mov dx, 0x1000
@@ -505,16 +551,47 @@ load_kernel:
     test eax, eax
     jz  .err_magic
     mov [kernel_size], eax
+
+    call stage_limit
+
+    mov eax, [kernel_size]
+    cmp eax, [stage_room]
+    ja  .err_big
     add eax, 511 ; sectors = ceil(size / 512)
     shr eax, 9
-    cmp eax, 127 ; buffer is 0x10000..0x20000 minus header
-    ja  .err_big
+    mov [kern_left], ax
+.read_loop:
+    mov ax, [kern_left]
+    test ax, ax
+    jz  .read_done
+    cmp ax, 127 ; one extended read is capped at 127 sectors
+    jbe .chunk_ok
+    mov ax, 127
+.chunk_ok:
+    mov [kern_chunk], ax
     mov word [dap_kern + 2], ax
+    mov ax, [kern_seg]
+    mov [dap_kern + 6], ax
+    mov eax, [kern_lba]
+    mov [dap_kern + 8], eax
+    mov eax, [kern_lba + 4]
+    mov [dap_kern + 12], eax
     mov si, dap_kern
     mov ah, 0x42
     mov dl, [boot_drive]
     int 0x13
     jc  .err_disk
+
+    mov ax, [kern_chunk]
+    xor edx, edx
+    add [kern_lba], ax
+    adc [kern_lba + 4], dx
+    sub [kern_left], ax
+    mov ax, [kern_seg]
+    add ax, 0x0FE0
+    mov [kern_seg], ax
+    jmp .read_loop
+.read_done:
     mov si, msg_kernel
     call serial_puts
     mov eax, [kernel_size]
@@ -535,6 +612,18 @@ load_kernel:
     ret
 .err_big:
     mov si, msg_krn_big
+    call serial_puts
+    mov si, msg_size
+    call serial_puts
+    mov eax, [kernel_size]
+    call print_hex32
+    mov si, msg_crlf
+    call serial_puts
+    mov si, msg_ceil
+    call serial_puts
+    mov eax, [stage_room]
+    call print_hex32
+    mov si, msg_ceil2
     call serial_puts
     stc
     ret
@@ -618,11 +707,17 @@ dap_khdr:
 dap_kern:
     db 0x10, 0x00
     dw 0 ; count filled in at runtime
-    dw 0x0200 ; offset -> 0x10000 + 512
-    dw 0x1000 ; segment -> 0x00010000
+    dw 0x0200 ; offset, 0x200 into whatever segment the read names
+    dw 0x1000 ; segment, filled in at runtime
     dq 10 ; LBA 10 (kernel image)
-kernel_size: dd 0
 
+kernel_size: dd 0
+stage_end: dd 0 ; where the staging area runs out
+stage_room: dd 0 ; and how many bytes that leaves for the image
+kern_left: dw 0 ; sectors still to read
+kern_chunk: dw 0 ; sectors in the read in hand
+kern_seg: dw 0x1000 ; the segment the next read lands in
+kern_lba: dq 10
 msg_banner: db "AURISYS stage2 up (real mode)", 13, 10, 0
 msg_mode_bios: db "AURISYS stage2: 1280x960 MODE OK (VBE BIOS path)", 13, 10, 0
 msg_mode_dispi: db "AURISYS stage2: 1280x960 MODE OK (Bochs-VBE registers)", 13, 10, 0
@@ -634,9 +729,12 @@ msg_pmode: db "AURISYS stage2: protected mode OK", 13, 10, 0
 msg_kernel: db "AURISYS kernel: loaded size=0x", 0
 msg_jump: db "AURISYS stage2: jumping to kernel @ 0x100000", 13, 10, 0
 msg_crlf: db 13, 10, 0
-msg_fatal_vbe:  db "AURISYS FATAL: could not set 1280x960x32 mode", 13, 10, 0
+msg_fatal_vbe: db "AURISYS FATAL: could not set 1280x960x32 mode", 13, 10, 0
 msg_fatal_nofb: db "AURISYS FATAL: framebuffer address unknown", 13, 10, 0
-msg_krn_disk:  db "AURISYS FATAL: disk read error loading kernel", 13, 10, 0
+msg_krn_disk: db "AURISYS FATAL: disk read error loading kernel", 13, 10, 0
 msg_krn_magic: db "AURISYS FATAL: bad kernel header magic (LBA 9)", 13, 10, 0
-msg_krn_big:   db "AURISYS FATAL: kernel too big for 0x10000 buffer", 13, 10, 0
+msg_krn_big: db "AURISYS FATAL: kernel does not fit the staging area. size=", 0
+msg_size: db 0
+msg_ceil: db "AURISYS FATAL: staging area holds 0x", 0
+msg_ceil2: db " bytes, see the e820 map", 13, 10, 0
 msg_krn_fatal: db "AURISYS FATAL: kernel load failed", 13, 10, 0

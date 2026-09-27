@@ -140,7 +140,7 @@ $(KERNEL_ELF): $(KERNEL_OBJS) src/kernel/linker.ld | $(BUILD)
 
 $(KERNEL_BIN): $(KERNEL_ELF)
 	$(OBJCOPY) -O binary $< $@
-	@n=$$(stat -c %s $@); test $$n -le 65024 || { echo "ERROR: kernel is $$n bytes, over the 65024 cap"; \
+	@n=$$(stat -c %s $@); test $$n -le 500000 || { echo "ERROR: kernel is $$n bytes, over the 500000 cap"; \
 		exit 1; }
 
 $(KERNEL_HDR): $(KERNEL_BIN)
@@ -168,8 +168,8 @@ fs-check: $(IMAGE) $(FS_IMG)
 
 size: $(KERNEL_BIN)
 	@n=$$(stat -c %s $(KERNEL_BIN)); \
-	echo "kernel.bin: $$n bytes (cap 65024, the loader ceiling, $$((65024 - n)) to spare)"; \
-	test $$n -le 65024 || { echo "kernel too big"; exit 1; }
+	echo "kernel.bin: $$n bytes (cap 500000, loader takes up to 589824, $$((500000 - n)) to spare)"; \
+	test $$n -le 500000 || { echo "kernel too big"; exit 1; }
 
 clean:
 	rm -rf $(BUILD)
