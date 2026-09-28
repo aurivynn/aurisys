@@ -223,12 +223,29 @@ void emit_both(char c) {
 	console::putchar(c);
 }
 
-void fd1_put(char c) {
-	const char b = c;
-	vfs::fd_write(1, &b, 1);
+// kernel printf writes in one go, not a character at a time
+constexpr int kPutMax = 1024;
+char g_put[kPutMax];
+int g_putn;
+
+void put_flush() {
+	if (g_putn > 0)
+		vfs::fd_write(1, g_put, (uint32_t)g_putn);
+	g_putn = 0;
 }
 
-void vprint(const char* fmt, va_list ap) { print::vprintf(fd1_put, fmt, ap); }
+void fd1_put(char c) {
+	if (g_putn >= kPutMax)
+		put_flush();
+	g_put[g_putn++] = c;
+	if (c == '\n')
+		put_flush();
+}
+
+void vprint(const char* fmt, va_list ap) {
+	print::vprintf(fd1_put, fmt, ap);
+	put_flush();
+}
 
 // wait for a key, keyboard first then serial
 int read_char() {

@@ -178,4 +178,70 @@ int poll() {
 	return c;
 }
 
+namespace {
+
+// A pending escape sequence
+char g_seq[8];
+int g_seqn;
+int g_seqout;
+
+} // namespace
+
+int poll_char() {
+	// finish handing back a sequence that is part delivered
+	if (g_seqout < g_seqn)
+		return (uint8_t)g_seq[g_seqout++];
+
+	for (;;) {
+		const int k = poll();
+		if (k == -1)
+			return -1;
+		if (k == -2)
+			continue;
+		if (k < KEY_UP || k > KEY_INS)
+			return k;
+
+		const char* s = nullptr;
+		switch (k) {
+		case KEY_UP:
+			s = "\x1b[A";
+			break;
+		case KEY_DOWN:
+			s = "\x1b[B";
+			break;
+		case KEY_RIGHT:
+			s = "\x1b[C";
+			break;
+		case KEY_LEFT:
+			s = "\x1b[D";
+			break;
+		case KEY_HOME:
+			s = "\x1b[H";
+			break;
+		case KEY_END:
+			s = "\x1b[F";
+			break;
+		case KEY_DEL:
+			s = "\x1b[3~";
+			break;
+		case KEY_PGUP:
+			s = "\x1b[5~";
+			break;
+		case KEY_PGDN:
+			s = "\x1b[6~";
+			break;
+		case KEY_INS:
+			s = "\x1b[2~";
+			break;
+		default:
+			continue;
+		}
+		g_seqn = 0;
+		while (s[g_seqn] && g_seqn < (int)sizeof g_seq)
+			++g_seqn;
+		g_seqout = 0;
+		return (uint8_t)g_seq[g_seqout++];
+	}
+}
+
 } // namespace kbd

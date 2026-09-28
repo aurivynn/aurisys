@@ -30,6 +30,24 @@ int mkdir(const char* path) { return (int)trp(SYS_mkdir, (uint32_t)(uintptr_t)pa
 int unlink(const char* path) { return (int)trp(SYS_unlink, (uint32_t)(uintptr_t)path, 0, 0, 0, 0); }
 int pipe(int fds[2]) { return (int)trp(SYS_pipe, (uint32_t)(uintptr_t)fds, 0, 0, 0, 0); }
 int getcwd(char* buf, uint32_t size) { return (int)trp(SYS_cwd, (uint32_t)(uintptr_t)buf, size, 0, 0, 0); }
+int chdir(const char* path) { return (int)trp(SYS_chdir, (uint32_t)(uintptr_t)path, 0, 0, 0, 0); }
+int ioctl(int fd, uint32_t req, void* arg) {
+	return (int)trp(SYS_ioctl, (uint32_t)fd, req, (uint32_t)(uintptr_t)arg, 0, 0);
+}
+
+int tty_get(int fd, uint32_t* flags) { return ioctl(fd, kIoctlGetFlags, flags); }
+
+int tty_set(int fd, uint32_t flags) { return ioctl(fd, kIoctlSetFlags, &flags); }
+
+int tty_raw(int fd) { return tty_set(fd, 0); }
+
+int tty_echo(int fd, int on) {
+	uint32_t f = 0;
+	if (tty_get(fd, &f) < 0)
+		return -1;
+	f = on ? (f | kTtyEcho) : (f & ~(uint32_t)kTtyEcho);
+	return tty_set(fd, f);
+}
 int statfs(fs_stat* out) { return (int)trp(SYS_statfs, (uint32_t)(uintptr_t)out, 0, 0, 0, 0); }
 int meminfo(mem_stat* out) { return (int)trp(SYS_meminfo, (uint32_t)(uintptr_t)out, 0, 0, 0, 0); }
 int uptime_ms() {

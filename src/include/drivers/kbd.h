@@ -22,4 +22,6 @@ int poll();	 // next key: ascii, a Key, or -1 if nothing queued
 void wait();
 void wake(); // a key arrived, or one is about to
 
+int poll_char();
+
 } // namespace kbd

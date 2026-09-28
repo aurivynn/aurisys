@@ -153,11 +153,13 @@ node* ext_find_child(node* n, const char* name) {
 
 typedef int (*dev_rd)(void* in, void* buf, uint32_t len);
 typedef int (*dev_wr)(void* in, const void* buf, uint32_t len);
+typedef int (*dev_ioctl_fn)(void* in, uint32_t req, void* arg);
 
 struct dev {
 	const char* name;
 	dev_rd rd;
 	dev_wr wr;
+	dev_ioctl_fn ctl;
 };
 
 int dev_null_rd(void*, void*, uint32_t len) {
@@ -227,13 +229,151 @@ int dev_fb_wr(void*, const void* buf, uint32_t len) {
 	return (int)len;
 }
 
+constexpr uint32_t kTtyBuf = 256;
+
+struct tty {
+	char buf[kTtyBuf];
+	uint32_t head; // where the next byte goes
+	uint32_t tail; // where the next byte is taken from
+	uint32_t flags;
+};
+
+tty g_tty;
+
+void tty_echo(const char* s, uint32_t n) {
+	for (uint32_t i = 0; i < n; ++i) {
+		serial::putc(s[i]);
+		console::putchar(s[i]);
+	}
+}
+void tty_echo(char c) { tty_echo(&c, 1); }
+
+int tty_buffered() { return g_tty.head != g_tty.tail ? 1 : 0; }
+
+uint32_t tty_count() { return (g_tty.head + kTtyBuf - g_tty.tail) % kTtyBuf; }
+
+void tty_put(char c) {
+	if (tty_count() + 1 >= kTtyBuf)
+		return;
+	g_tty.buf[g_tty.head] = c;
+	g_tty.head = (g_tty.head + 1u) % kTtyBuf;
+}
+
+void tty_drop() { g_tty.head = g_tty.tail; }
+
+int tty_key(bool block) {
+	int c = kbd::poll_char();
+	if (c >= 0)
+		return c;
+	const int s = (int)serial::recv();
+	if (s >= 0)
+		return s;
+	if (block)
+		kbd::wait(); // parks until a key arrives and serial wakes it on a tick
+	return -1;
+}
+
+// deliver a whole line assembled here out of the keystrokes that make it up
+int dev_tty_rd(void*, void* buf, uint32_t len) {
+	if (len == 0)
+		return 0;
+	uint8_t* out = (uint8_t*)buf;
+	uint32_t got = 0;
+	const bool canon = (g_tty.flags & kTtyCanon) != 0;
+	const bool echo = (g_tty.flags & kTtyEcho) != 0;
+	const bool sigs = (g_tty.flags & kTtySig) != 0;
+
+	for (;;) {
+		if (tty_buffered()) {
+			out[got++] = g_tty.buf[g_tty.tail];
+			g_tty.tail = (g_tty.tail + 1u) % kTtyBuf;
+			if (got >= len || !canon)
+				break;
+			continue;
+		}
+
+		int c = tty_key(true);
+		if (c < 0)
+			continue;
+
+		if (c == 0x03 && sigs) {
+			tty_drop();
+			if (echo) {
+				tty_echo("^C\r\n", 4);
+			}
+			task::task* self = task::g_current;
+			if (self)
+				task::kill(self->pid, task::kSigInt);
+
+			return 0;
+		}
+
+		if (c == 0x04 && canon) {
+			if (!tty_buffered())
+				break;
+			tty_put((char)c);
+			if (echo)
+				tty_echo((char)c);
+			continue;
+		}
+
+		if (c == 0x7F && canon) {
+			if (g_tty.head != g_tty.tail) {
+				g_tty.head = (g_tty.head - 1u + kTtyBuf) % kTtyBuf;
+				if (echo)
+					tty_echo("\b \b", 3);
+			}
+			continue;
+		}
+
+		if (c == '\r' && canon)
+			c = '\n';
+
+		tty_put((char)c);
+		if (echo) {
+			if (c == '\n')
+				tty_echo("\r\n", 2);
+			else if (c == '\t')
+				tty_echo("\t", 1);
+			else if (c < 0x20) {
+				char bell = 7;
+				tty_echo(bell);
+			} else
+				tty_echo((char)c);
+		}
+	}
+	return (int)got;
+}
+
+int dev_tty_wr(void*, const void* buf, uint32_t len) {
+	tty_echo((const char*)buf, len);
+	return (int)len;
+}
+
+int dev_tty_ctl(void*, uint32_t req, void* arg) {
+	if (!arg)
+		return -kErrInval;
+	switch (req) {
+	case kIoctlGetFlags:
+		*(uint32_t*)arg = g_tty.flags;
+		return 0;
+	case kIoctlSetFlags:
+		g_tty.flags = *(uint32_t*)arg;
+		tty_drop(); // a line half typed under the old modes is not a line now
+		return 0;
+	default:
+		return -kErrInval;
+	}
+}
+
 const dev g_devs[] = {
-	{"null", dev_null_rd, dev_null_wr},
-	{"zero", dev_zero_rd, dev_zero_wr},
-	{"console", dev_console_rd, dev_console_wr},
-	{"serial", dev_serial_rd, dev_serial_wr},
-	{"kbd", dev_kbd_rd, nullptr},
-	{"fb", nullptr, dev_fb_wr},
+	{"null", dev_null_rd, dev_null_wr, nullptr},
+	{"zero", dev_zero_rd, dev_zero_wr, nullptr},
+	{"console", dev_console_rd, dev_console_wr, nullptr},
+	{"serial", dev_serial_rd, dev_serial_wr, nullptr},
+	{"kbd", dev_kbd_rd, nullptr, nullptr},
+	{"fb", nullptr, dev_fb_wr, nullptr},
+	{"tty", dev_tty_rd, dev_tty_wr, dev_tty_ctl},
 };
 constexpr uint32_t kDevCount = sizeof(g_devs) / sizeof(g_devs[0]);
 
@@ -246,6 +386,10 @@ int dev_write(node* n, const void* buf, uint32_t off, uint32_t len) {
 	(void)off;
 	dev* d = (dev*)n->internal;
 	return d->wr ? d->wr(d, buf, len) : 0;
+}
+int dev_node_ctl(node* n, uint32_t req, void* arg) {
+	dev* d = (dev*)n->internal;
+	return d->ctl ? d->ctl(d, req, arg) : -kErrInval;
 }
 
 int dev_readdir(node* n, uint32_t index, node* out) {
@@ -265,6 +409,7 @@ int dev_readdir(node* n, uint32_t index, node* out) {
 	out->parent = n;
 	out->read = dev_read;
 	out->write = dev_write;
+	out->ctl = dev_node_ctl;
 	out->internal = (void*)&d[index];
 	return 0;
 }
@@ -283,6 +428,7 @@ node* dev_find_child(node* n, const char* name) {
 		out->parent = n;
 		out->read = dev_read;
 		out->write = dev_write;
+		out->ctl = dev_node_ctl;
 		out->internal = (void*)&d[i];
 		return out;
 	}
@@ -725,6 +871,20 @@ int lseek(int fd, int off, int whence) {
 	return (int)e->pos;
 }
 
+int ioctl(int fd, uint32_t req, void* arg) {
+	ofile* g_fd = fds();
+	if (!g_fd)
+		return -kErrBadf;
+	if (fd < 0 || fd >= kMaxFd)
+		return -kErrBadf;
+	ofile* e = &g_fd[fd];
+	if (!e->n.type)
+		return -kErrBadf;
+	if (!e->n.ctl)
+		return -kErrInval;
+	return e->n.ctl(&e->n, req, arg);
+}
+
 // point one fd at the same open file, vacating the target first
 int next_free() {
 	ofile* g_fd = fds();
@@ -818,6 +978,9 @@ bool init() {
 	if (!fs::getstat(2, &st))
 		return false;
 	g_root.size = st.size;
+
+	memset(&g_tty, 0, sizeof g_tty);
+	g_tty.flags = kTtyCanon | kTtyEcho | kTtySig;
 
 	memset(&g_devfs, 0, sizeof g_devfs);
 	g_devfs.name = g_devfs.name_buf;

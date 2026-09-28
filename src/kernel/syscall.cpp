@@ -159,6 +159,10 @@ int dispatch(regs* r) {
 
 		return 0;
 	}
+	case SYS_ioctl:
+		return vfs::ioctl((int)r->ebx, r->ecx, (void*)r->edx);
+	case SYS_chdir:
+		return task::chdir((const char*)r->ebx) ? 0 : -kErrNoEnt;
 	case SYS_wait: {
 		uint32_t code = 0;
 		const int32_t pid = task::wait_for((int32_t)r->ebx, &code);
@@ -217,8 +221,14 @@ int dispatch(regs* r) {
 
 } // namespace
 
+// the int 0x80 gate
 extern "C" uint32_t syscall_dispatch(regs* r) {
+	task::task* self = task::g_current;
+	if (self)
+		self->in_syscall = true;
 	const uint32_t out = (uint32_t)dispatch(r);
-	task::deliver_pending(task::g_current, (Registers*)r);
+	task::deliver_pending(self, (Registers*)r);
+	if (self)
+		self->in_syscall = false;
 	return out;
 }

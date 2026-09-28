@@ -23,9 +23,16 @@ int mkdir(const char* path);
 int unlink(const char* path);
 int pipe(int fds[2]);
 int getcwd(char* buf, uint32_t size);
+int chdir(const char* path);
 int statfs(fs_stat* out);
 int meminfo(mem_stat* out);
 int uptime_ms();
+
+int ioctl(int fd, uint32_t req, void* arg);
+int tty_get(int fd, uint32_t* flags); // the modes as they are
+int tty_set(int fd, uint32_t flags);  // and back to canonical
+int tty_raw(int fd);				  // everything off
+int tty_echo(int fd, int on);		  // keep the discipline echoing or not
 
 int brk(uint32_t addr);
 int sbrk(int delta);

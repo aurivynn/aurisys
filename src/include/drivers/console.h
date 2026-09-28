@@ -16,4 +16,7 @@ int cx();	   // cursor column, in cells
 int cy();	   // cursor row, in cells
 uint32_t bg(); // current bg color
 
+void cursor_visible(bool on);
+bool cursor_is_visible();
+
 } // namespace console

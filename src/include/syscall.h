@@ -39,6 +39,20 @@ enum {
 	SYS_sleep,
 	SYS_sigaction,
 	SYS_sigreturn,
+	SYS_ioctl,
+	SYS_chdir,
+};
+
+// terminal modes, for ioctl on /dev/tty
+enum {
+	kTtyCanon = 1, // deliver a line at a time rather than a keystroke at a time
+	kTtyEcho = 2,  // send what was typed back out
+	kTtySig = 4,   // ctrl c interrupts rather than arriving as a byte
+};
+
+enum {
+	kIoctlGetFlags = 0x5401, // read the modes into the argument
+	kIoctlSetFlags = 0x5402, // take the modes from the argument
 };
 
 // errno

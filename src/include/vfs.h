@@ -15,6 +15,7 @@ typedef int (*read_fn)(node* n, void* buf, uint32_t off, uint32_t len);
 typedef int (*write_fn)(node* n, const void* buf, uint32_t off, uint32_t len);
 typedef int (*readdir_fn)(node* n, uint32_t index, node* out);
 typedef node* (*find_fn)(node* n, const char* name);
+typedef int (*ctl_fn)(node* n, uint32_t req, void* arg);
 
 constexpr uint8_t kTypeFile = 1;
 constexpr uint8_t kTypeDir = 2;
@@ -36,6 +37,7 @@ struct node {
 	write_fn write;
 	readdir_fn readdir;
 	find_fn find_child;
+	ctl_fn ctl; // null on anything that has nothing to control
 
 	char name_buf[64]; // the name lives in here
 };
@@ -63,8 +65,9 @@ void fd_close_all(task::task* t);
 int fd_read(int fd, void* buf, uint32_t len);
 int fd_write(int fd, const void* buf, uint32_t len);
 int lseek(int fd, int off, int whence); // 0 set, 1 cur, 2 end, new offset out
-int dup2(int old, int nw);				// point nw at old, closing nw first
-int next_free();						// the lowest unused descriptor or -1
+int ioctl(int fd, uint32_t req, void* arg);
+int dup2(int old, int nw); // point nw at old, closing nw first
+int next_free();		   // the lowest unused descriptor or -1
 int fd_install(task::task* into, int child_fd, int from);
 
 int fd_mem(void* buf, uint32_t size);
