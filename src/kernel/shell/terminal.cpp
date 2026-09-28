@@ -624,43 +624,20 @@ static int run_alone(stage& s) {
 		report_not_runnable(s.word[0], why);
 		return 127;
 	}
-	int saved[2] = {-1, -1};
-	if (s.in.kind) {
-		const int fd = open_for(s.in, false);
-		if (fd < 0) {
-			terminal::printf("%s: %s: no such file\n", s.word[0], s.in.path);
-			return 1;
-		}
-		saved[0] = vfs::dup2(0, 9);
-		vfs::dup2(fd, 0);
-		vfs::fd_close(fd);
-	}
-	if (s.out.kind) {
-		const int fd = open_for(s.out, true);
-		if (fd < 0) {
-			terminal::printf("%s: %s: cannot write\n", s.word[0], s.out.path);
-			return 1;
-		}
-		saved[1] = vfs::dup2(1, 10);
-		vfs::dup2(fd, 1);
-		vfs::fd_close(fd);
-	}
-
-	if (saved[0] >= 0 || saved[1] >= 0) {
-		if (!exec::run(pp, s.argc, s.word, &code))
-			code = 127;
-		if (saved[0] >= 0) {
-			vfs::dup2(saved[0], 0);
-			vfs::fd_close(saved[0]);
-		}
-		if (saved[1] >= 0) {
-			vfs::dup2(saved[1], 1);
-			vfs::fd_close(saved[1]);
-		}
-	} else if (!exec::run(pp, s.argc, s.word, &code)) {
+	if (!exec::run(pp, s.argc, s.word, &code))
 		code = 127;
-	}
 	return (int)code;
+}
+
+static int open_redir(const char* cmd, const redir& r, bool write) {
+	const int fd = open_for(r, write);
+	if (fd >= 0)
+		return fd;
+	if (write)
+		terminal::printf("%s: %s: cannot write\n", cmd, r.path);
+	else
+		terminal::printf("%s: %s: no such file\n", cmd, r.path);
+	return -1;
 }
 
 static int wait_for_pid(uint32_t pid) {
@@ -697,20 +674,38 @@ static int run_pipeline(stage* st, int n, bool background) {
 		int infd = -1;
 		if (i > 0)
 			infd = pf[i - 1][0];
-		else if (s.in.kind)
-			infd = open_for(s.in, false);
-		else
+		else if (s.in.kind) {
+			infd = open_redir(s.word[0], s.in, false);
+			if (infd < 0) {
+				for (int k = 0; k < i; ++k) {
+					vfs::fd_close(pf[k][0]);
+					vfs::fd_close(pf[k][1]);
+				}
+				return 1;
+			}
+		} else
 			infd = open_console();
 
 		int outfd = -1;
 		if (i + 1 < n)
 			outfd = pf[i][1];
-		else if (s.out.kind)
-			outfd = open_for(s.out, true);
+		else if (s.out.kind) {
+			outfd = open_redir(s.word[0], s.out, true);
+			if (outfd < 0) {
+				// the input redirect for this stage is already open and the
+				// pipes for the stages before it are too, so they go back now
+				// rather than being left to the next command to trip over
+				if (infd >= 0)
+					vfs::fd_close(infd);
+				for (int k = 0; k < i; ++k) {
+					vfs::fd_close(pf[k][0]);
+					vfs::fd_close(pf[k][1]);
+				}
+				return 1;
+			}
+		}
 
 		if (i + 1 == n && !background) {
-			const bool had_out = s.out.kind != 0;
-
 			int saved[2] = {-1, -1};
 			if (infd >= 0) {
 				saved[0] = vfs::dup2(0, 9);
@@ -734,7 +729,7 @@ static int run_pipeline(stage* st, int n, bool background) {
 
 			if (infd >= 0)
 				vfs::fd_close(infd);
-			if (outfd >= 0 && had_out)
+			if (outfd >= 0)
 				vfs::fd_close(outfd);
 			continue;
 		}
