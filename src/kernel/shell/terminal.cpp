@@ -578,21 +578,50 @@ static int open_for(const redir& r, bool write) {
 
 int open_console() { return vfs::dup2(0, vfs::next_free()); }
 
-static bool which(const char* name, char* out, int outsz) {
-	if (vfs::find_in_path(name, out, outsz))
-		return true;
-	if (!strchr(name, '/'))
-		return false;
+enum which_result {
+	kFound,
+	kNoSuchCommand, // no such name on the search path
+	kNotAProgram,	// it names something, and that something is not a program
+	kNoSuchFile,
+};
+
+static which_result which(const char* name, char* out, int outsz) {
+	const bool given_as_path = strchr(name, '/') != nullptr;
+
+	if (vfs::find_in_path(name, out, outsz)) {
+		const vfs::node* n = vfs::resolve(out);
+		return (n && n->type == vfs::kTypeDir) ? kNotAProgram : kFound;
+	}
+	if (!given_as_path)
+		return kNoSuchCommand;
 	strncpy(out, name, outsz - 1);
 	out[outsz - 1] = 0;
-	return true;
+	const vfs::node* n = vfs::resolve(out);
+	if (!n)
+		return kNoSuchFile;
+	return n->type == vfs::kTypeDir ? kNotAProgram : kFound;
+}
+
+static void report_not_runnable(const char* name, which_result why) {
+	switch (why) {
+	case kNotAProgram:
+		terminal::printf("%s: not a program\n", name);
+		break;
+	case kNoSuchFile:
+		terminal::printf("%s: no such file\n", name);
+		break;
+	default:
+		terminal::printf("unknown command: %s\n", name);
+		break;
+	}
 }
 
 static int run_alone(stage& s) {
 	uint32_t code = 0;
 	char pp[256];
-	if (!which(s.word[0], pp, sizeof pp)) {
-		terminal::printf("unknown command: %s\n", s.word[0]);
+	const which_result why = which(s.word[0], pp, sizeof pp);
+	if (why != kFound) {
+		report_not_runnable(s.word[0], why);
 		return 127;
 	}
 	int saved[2] = {-1, -1};
@@ -616,11 +645,10 @@ static int run_alone(stage& s) {
 		vfs::dup2(fd, 1);
 		vfs::fd_close(fd);
 	}
+
 	if (saved[0] >= 0 || saved[1] >= 0) {
-		if (!exec::run(pp, s.argc, s.word, &code)) {
-			terminal::printf("unknown command: %s\n", s.word[0]);
+		if (!exec::run(pp, s.argc, s.word, &code))
 			code = 127;
-		}
 		if (saved[0] >= 0) {
 			vfs::dup2(saved[0], 0);
 			vfs::fd_close(saved[0]);
@@ -630,14 +658,31 @@ static int run_alone(stage& s) {
 			vfs::fd_close(saved[1]);
 		}
 	} else if (!exec::run(pp, s.argc, s.word, &code)) {
-		terminal::printf("unknown command: %s\n", s.word[0]);
 		code = 127;
 	}
 	return (int)code;
 }
 
+static int wait_for_pid(uint32_t pid) {
+	task::task* t = nullptr;
+	for (;;) {
+		t = task::find(pid);
+		if (!t || t->state == task::kZombie)
+			break;
+		task::yield();
+	}
+	const int code = t ? (int)t->exit_code : 0;
+	const uint32_t sig = t ? t->signal : 0;
+	task::clear_foreground(t);
+	task::reap();
+	task::take_signal(pid);
+	return sig ? 128 + (int)sig : code;
+}
+
 static int run_pipeline(stage* st, int n, bool background) {
 	int pf[kMaxStage - 1][2];
+	uint32_t pids[kMaxStage];
+	int npid = 0;
 	int status = 0;
 
 	for (int i = 0; i + 1 < n; ++i)
@@ -666,7 +711,6 @@ static int run_pipeline(stage* st, int n, bool background) {
 		if (i + 1 == n && !background) {
 			const bool had_out = s.out.kind != 0;
 
-			const bool infd_is_shells = (i == 0 && !s.in.kind);
 			int saved[2] = {-1, -1};
 			if (infd >= 0) {
 				saved[0] = vfs::dup2(0, 9);
@@ -688,7 +732,7 @@ static int run_pipeline(stage* st, int n, bool background) {
 				vfs::fd_close(saved[1]);
 			}
 
-			if (infd >= 0 && !infd_is_shells)
+			if (infd >= 0)
 				vfs::fd_close(infd);
 			if (outfd >= 0 && had_out)
 				vfs::fd_close(outfd);
@@ -696,8 +740,9 @@ static int run_pipeline(stage* st, int n, bool background) {
 		}
 
 		char pp[256];
-		if (!which(s.word[0], pp, sizeof pp)) {
-			terminal::printf("unknown command: %s\n", s.word[0]);
+		const which_result why = which(s.word[0], pp, sizeof pp);
+		if (why != kFound) {
+			report_not_runnable(s.word[0], why);
 			for (int k = 0; k < n - 1; ++k) {
 				vfs::fd_close(pf[k][0]);
 				vfs::fd_close(pf[k][1]);
@@ -711,27 +756,29 @@ static int run_pipeline(stage* st, int n, bool background) {
 		if (outfd >= 0)
 			map[nmap++] = {1, outfd};
 
-		const bool had_in_here = (i > 0 || s.in.kind);
-
-		const uint32_t pid = exec::spawn_mapped(pp, s.argc, s.word, map, nmap, env_count(), env_vector());
-		if (!pid) {
+		const uint32_t kid = exec::spawn_mapped(pp, s.argc, s.word, map, nmap, env_count(), env_vector());
+		if (!kid) {
 			terminal::printf("%s: could not start\n", s.word[0]);
 			status = 127;
 		}
-		if (infd >= 0 && (i > 0 || had_in_here))
+
+		if (infd >= 0)
 			vfs::fd_close(infd);
 		if (outfd >= 0)
 			vfs::fd_close(outfd);
 
-		if (i > 0)
-			vfs::fd_close(pf[i - 1][0]);
+		if (kid)
+			pids[npid++] = kid;
 		if (background) {
-			terminal::printf("[%u] %s\n", pid, pp);
-			task::set_foreground(task::find(pid));
+			terminal::printf("[%u] %s\n", kid, pp);
+			task::set_foreground(task::find(kid));
 		}
 	}
 	if (background)
 		return 0;
+
+	for (int i = 0; i < npid; ++i)
+		wait_for_pid(pids[i]);
 	return status;
 }
 

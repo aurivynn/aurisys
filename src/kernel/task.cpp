@@ -134,6 +134,9 @@ task* create(const char* name, const char* argv0) {
 	// a child inherits the table it was created from, so the console ops come along.
 	if (g_current) {
 		memcpy(t->fd, g_current->fd, sizeof t->fd);
+		for (int i = 0; i < vfs::kMaxFd; ++i)
+			if (t->fd[i].n.type)
+				vfs::fd_share(&t->fd[i]);
 		t->nfd = (uint8_t)count_fds(t->fd);
 	}
 
@@ -615,7 +618,7 @@ void reap() {
 		if (t->state == kKilled) {
 			t->exit_code = 128 + (int)t->signal;
 			t->state = kZombie;
-
+			vfs::fd_close_all(t);
 			announce(t);
 		}
 		if (t->state != kZombie || t == g_current)
@@ -798,6 +801,7 @@ uint32_t fork_user(const Registers* frame) {
 		if (t->state != kKilled)
 			t->signal = kSigNone;
 		t->state = kZombie;
+		vfs::fd_close_all(t);
 		announce(t);
 		t->in_syscall = true;
 	}

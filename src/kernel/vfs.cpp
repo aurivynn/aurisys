@@ -436,6 +436,37 @@ int fd_open(const char* path, uint32_t flags) {
 	return fd;
 }
 
+static void fd_unshare(const ofile* f) {
+	if (!f || f->n.type != kTypeFifo)
+		return;
+	pipebuf* p = (pipebuf*)f->n.internal;
+	if (!p)
+		return;
+	const bool write_end = (f->flags & kPipeWriteEnd) != 0;
+	if (write_end)
+		--p->writers;
+	else
+		--p->readers;
+	if (p->writers < 0)
+		p->writers = 0;
+	if (p->readers < 0)
+		p->readers = 0;
+
+	// a party waiting on the far side is waiting for a count to move, so whoever
+	// just moved it has to say so
+	if (write_end && !p->writers && p->rd_wait) {
+		task::unblock(p->rd_wait);
+		p->rd_wait = nullptr;
+	}
+	if (!write_end && !p->readers && p->wr_wait) {
+		task::unblock(p->wr_wait);
+		p->wr_wait = nullptr;
+	}
+
+	if (!p->writers && !p->readers)
+		p->open = 0;
+}
+
 static void close_in(task::task* t, int fd) {
 	ofile* g_fd = t ? &t->fd[0] : nullptr;
 	if (!g_fd || fd < 0 || fd >= kMaxFd)
@@ -444,32 +475,7 @@ static void close_in(task::task* t, int fd) {
 	if (g_fd[fd].n.type == kTypeMem && g_fd[fd].n.internal) {
 		((memwin*)g_fd[fd].n.internal)->buf = nullptr;
 	}
-	if (g_fd[fd].n.type == kTypeFifo) {
-		pipebuf* p = (pipebuf*)g_fd[fd].n.internal;
-		if (p) {
-			const bool write_end = (g_fd[fd].flags & kPipeWriteEnd) != 0;
-			if (write_end)
-				--p->writers;
-			else
-				--p->readers;
-			if (p->writers < 0)
-				p->writers = 0;
-			if (p->readers < 0)
-				p->readers = 0;
-
-			if (write_end && !p->writers && p->rd_wait) {
-				task::unblock(p->rd_wait);
-				p->rd_wait = nullptr;
-			}
-			if (!write_end && !p->readers && p->wr_wait) {
-				task::unblock(p->wr_wait);
-				p->wr_wait = nullptr;
-			}
-
-			if (!p->writers && !p->readers)
-				p->open = 0;
-		}
-	}
+	fd_unshare(&g_fd[fd]);
 	memset(&g_fd[fd], 0, sizeof g_fd[fd]);
 }
 
@@ -643,8 +649,11 @@ int fd_install(task::task* into, int child_fd, int from) {
 	if (!mine || !mine[from].n.type)
 		return -1;
 	ofile* theirs = &into->fd[child_fd];
+
+	fd_unshare(theirs);
 	memcpy(theirs, &mine[from], sizeof *theirs);
 	theirs->n.name = theirs->n.name_buf;
+	fd_share(theirs);
 	return child_fd;
 }
 
@@ -739,6 +748,8 @@ int dup2(int old, int nw) {
 		fd_close(nw);
 	memcpy(&g_fd[nw], &g_fd[old], sizeof g_fd[nw]);
 	g_fd[nw].n.name = g_fd[nw].n.name_buf;
+
+	fd_share(&g_fd[nw]);
 	return nw;
 }
 

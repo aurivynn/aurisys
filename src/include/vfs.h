@@ -58,6 +58,8 @@ constexpr uint8_t kTypeMem = 5;	 // a window onto memory the caller owns
 
 int fd_open(const char* path, uint32_t flags);
 int fd_close(int fd);
+
+void fd_close_all(task::task* t);
 int fd_read(int fd, void* buf, uint32_t len);
 int fd_write(int fd, const void* buf, uint32_t len);
 int lseek(int fd, int off, int whence); // 0 set, 1 cur, 2 end, new offset out
