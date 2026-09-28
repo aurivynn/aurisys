@@ -163,10 +163,18 @@ int main(int argc, char** argv) {
 
 	// environment
 	{
-		char* av[3];
+		char* av[6];
 		char n0[] = "showenv";
+		char n1[] = "-c";
+		char n2[] = "AURISYS_PHASE4=envp";
+		char n3[] = "SECOND=two";
+		char n4[] = "NEVER_PASSED";
 		av[0] = n0;
-		av[1] = nullptr;
+		av[1] = n1;
+		av[2] = n2;
+		av[3] = n3;
+		av[4] = n4;
+		av[5] = nullptr;
 		char* ev[4];
 		char e0[] = "AURISYS_PHASE4=envp";
 		char e1[] = "SECOND=two";
