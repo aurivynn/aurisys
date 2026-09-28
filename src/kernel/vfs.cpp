@@ -175,11 +175,10 @@ int dev_zero_wr(void*, const void*, uint32_t len) { return (int)len; }
 int dev_console_rd(void*, void* buf, uint32_t len) {
 	if (len == 0)
 		return 0;
-	int c = kbd::poll();
+
+	int c = task::console_key();
 	if (c < 0)
-		c = serial::recv();
-	if (c < 0)
-		return 0; // nothing waiting, non block for now
+		return 0; // nothing waiting, or it was an interrupt, so no byte
 	((uint8_t*)buf)[0] = (uint8_t)c;
 	return 1;
 }
@@ -753,16 +752,18 @@ node* fd_node(int fd) {
 }
 
 // PATH
+const char* path() {
+	const char* p = terminal::getenv_from_shell("PATH");
+	return (p && *p) ? p : "/bin";
+}
 
-const char kPath[] = "/bin";
-
-const char* path() { return kPath; }
+bool set_path_from_shell(const char* value) { return terminal::set_env_in_shell("PATH", value); }
 
 // first PATH entry that holds the name wins
 bool find_in_path(const char* name, char* out, uint32_t outsz) {
 	if (!name || !out || outsz < 2)
 		return false;
-	const char* p = kPath;
+	const char* p = path();
 	while (*p) {
 		char dir[128];
 		uint32_t dn = 0;

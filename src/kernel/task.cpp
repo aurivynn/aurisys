@@ -17,6 +17,18 @@ task g_tasks[kMaxTask];
 task* g_current = nullptr;
 
 namespace {
+task* g_foreground = nullptr;
+} // namespace
+
+void set_foreground(task* t) { g_foreground = t; }
+task* foreground() { return g_foreground; }
+
+void clear_foreground(task* t) {
+	if (g_foreground == t)
+		g_foreground = nullptr;
+}
+
+namespace {
 
 constexpr uint32_t kKernelStackBytes = 16384;
 
@@ -665,6 +677,30 @@ int32_t wait_for(int32_t pid, uint32_t* code) {
 			return -kErrIntr;
 		}
 	}
+}
+
+int console_key() {
+	int c = kbd::poll();
+	if (c < 0)
+		c = (int)serial::recv();
+	if (c != 0x03)
+		return c;
+
+	if (g_foreground && g_foreground->state != kRunning)
+		g_foreground = nullptr;
+
+	task* fg = g_foreground;
+
+	if (fg && fg != g_current) {
+		kill(fg->pid, kSigInt);
+		return -1;
+	}
+	if (fg && fg == g_current && g_current->pid != kPid1) {
+		kill(fg->pid, kSigInt);
+		return -1;
+	}
+
+	return c;
 }
 
 uint32_t take_signal(uint32_t for_pid) {

@@ -40,8 +40,8 @@ int uptime_ms() {
 
 int fork() { return (int)trp(SYS_fork, 0, 0, 0, 0, 0); }
 
-int execve(const char* path, char* const argv[]) {
-	return (int)trp(SYS_execve, (uint32_t)(uintptr_t)path, (uint32_t)(uintptr_t)argv, 0, 0, 0);
+int execve(const char* path, char* const argv[], char* const envp[]) {
+	return (int)trp(SYS_execve, (uint32_t)(uintptr_t)path, (uint32_t)(uintptr_t)argv, (uint32_t)(uintptr_t)envp, 0, 0);
 }
 
 int waitpid(int pid, int* status) {
@@ -64,6 +64,19 @@ int sleep_ms(uint32_t ms) { return (int)trp(SYS_sleep, ms, 0, 0, 0, 0); }
 
 int sig_set(int sig, const sigaction* act, sigaction* old) {
 	return (int)trp(SYS_sigaction, (uint32_t)sig, (uint32_t)(uintptr_t)act, (uint32_t)(uintptr_t)old, 0, 0);
+}
+
+char** environ = nullptr;
+
+char* getenv(const char* name) {
+	if (!environ || !name)
+		return nullptr;
+	const size_t n = strlen(name);
+	for (char** e = environ; *e; ++e) {
+		if (strncmp(*e, name, n) == 0 && (*e)[n] == '=')
+			return *e + n + 1;
+	}
+	return nullptr;
 }
 
 int brk(uint32_t addr) { return (int)(uint32_t)trp(SYS_brk, addr, 0, 0, 0, 0); }

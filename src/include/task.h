@@ -108,6 +108,12 @@ uint32_t task_sbrk(task* t, int delta);
 extern task g_tasks[kMaxTask];
 extern task* g_current;
 
+void set_foreground(task* t);
+task* foreground();
+void clear_foreground(task* t);
+
+int console_key();
+
 task* create(const char* name, const char* argv0); // fresh space, fresh fds
 
 void arm(task* t);

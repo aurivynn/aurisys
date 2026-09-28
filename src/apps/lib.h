@@ -33,7 +33,10 @@ int printf(const char* fmt, ...);
 bool is_dot(const char* n);
 
 int fork();
-int execve(const char* path, char* const argv[]);
+int execve(const char* path, char* const argv[], char* const envp[]);
+
+extern char** environ;
+char* getenv(const char* name);
 int wait(int* status);
 int waitpid(int pid, int* status);
 int kill(int pid, int sig);

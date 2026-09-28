@@ -20,6 +20,96 @@
 
 namespace terminal {
 
+// environment
+constexpr int kMaxEnv = 32;
+constexpr int kEnvMax = 128;
+static char g_env[kMaxEnv][kEnvMax];
+static int g_env_n;
+
+static bool env_is(const char* entry, const char* name) {
+	int i = 0;
+	while (name[i] && name[i] != '=') {
+		if (entry[i] != name[i])
+			return false;
+		++i;
+	}
+	return entry[i] == '=';
+}
+
+void env_set(const char* text) {
+	if (!text)
+		return;
+	int slot = -1;
+	for (int i = 0; i < g_env_n; ++i)
+		if (env_is(g_env[i], text)) {
+			slot = i;
+			break;
+		}
+	if (slot < 0) {
+		if (g_env_n >= kMaxEnv)
+			return;
+		slot = g_env_n++;
+	}
+	strncpy(g_env[slot], text, kEnvMax - 1);
+	g_env[slot][kEnvMax - 1] = 0;
+}
+
+void env_assign(const char* name, const char* value) {
+	char buf[kEnvMax];
+	if (!name)
+		return;
+	if (value) {
+		const size_t nl = strlen(name);
+		if (nl + strlen(value) + 2 >= sizeof buf)
+			return;
+		memcpy(buf, name, nl);
+		buf[nl] = '=';
+		strcpy(buf + nl + 1, value);
+	} else {
+		strncpy(buf, name, sizeof buf - 1);
+		buf[sizeof buf - 1] = 0;
+	}
+	env_set(buf);
+}
+
+void env_unset(const char* name) {
+	for (int i = 0; i < g_env_n; ++i) {
+		if (!env_is(g_env[i], name))
+			continue;
+
+		for (int k = i + 1; k < g_env_n; ++k)
+			strcpy(g_env[k - 1], g_env[k]);
+		--g_env_n;
+		return;
+	}
+}
+
+int env_count() { return g_env_n; }
+
+const char** env_vector() {
+	static const char* v[kMaxEnv + 1];
+	for (int i = 0; i < g_env_n; ++i)
+		v[i] = g_env[i];
+	v[g_env_n] = nullptr;
+	return v;
+}
+
+const char* getenv_from_shell(const char* name) {
+	if (!name)
+		return nullptr;
+	for (int i = 0; i < g_env_n; ++i)
+		if (env_is(g_env[i], name))
+			return strchr(g_env[i], '=') + 1;
+	return nullptr;
+}
+
+bool set_env_in_shell(const char* name, const char* value) {
+	if (!name || !*name)
+		return false;
+	env_assign(name, value);
+	return true;
+}
+
 namespace {
 
 const int kLineMax = 127; // +1 for the NUL
@@ -144,10 +234,8 @@ void vprint(const char* fmt, va_list ap) { print::vprintf(fd1_put, fmt, ap); }
 int read_char() {
 	for (;;) {
 		cursor_tick();
-		int c = kbd::poll();
-		if (c >= 0)
-			return c;
-		c = serial::recv();
+
+		int c = task::console_key();
 		if (c >= 0)
 			return c;
 		kbd::wait();
@@ -164,14 +252,13 @@ using bank_t = char[kMaxStage][kMaxWord][kWordMax];
 
 static bank_t g_bank[kMaxNest + 1];
 
-static char g_var[8][32];
-static char g_val[8][64];
-static int g_nvar = 0;
-
 static const char* lookup_var(const char* name, int len) {
-	for (int i = 0; i < g_nvar; ++i)
-		if ((int)strlen(g_var[i]) == len && strncmp(g_var[i], name, (size_t)len) == 0)
-			return g_val[i];
+	for (int i = 0; i < g_env_n; ++i) {
+		const char* eq = strchr(g_env[i], '=');
+		if (!eq || (int)(eq - g_env[i]) != len || strncmp(g_env[i], name, (size_t)len) != 0)
+			continue;
+		return eq + 1;
+	}
 	return nullptr;
 }
 
@@ -194,6 +281,7 @@ static int run_job(char** line, char* op, bool go, int depth);
 static bool builtin_cd(int argc, const char** argv);
 static bool builtin_kill(int argc, const char** argv);
 static bool builtin_export(int argc, const char** argv);
+static bool builtin_env(int argc, const char** argv);
 static bool builtin_exit(int argc, const char** argv);
 
 static bool is_op(char c) { return c == '|' || c == '&' || c == ';' || c == '<' || c == '>' || c == '(' || c == ')'; }
@@ -488,6 +576,8 @@ static int open_for(const redir& r, bool write) {
 	return vfs::fd_open(r.path, mode);
 }
 
+int open_console() { return vfs::dup2(0, vfs::next_free()); }
+
 static bool which(const char* name, char* out, int outsz) {
 	if (vfs::find_in_path(name, out, outsz))
 		return true;
@@ -564,6 +654,8 @@ static int run_pipeline(stage* st, int n, bool background) {
 			infd = pf[i - 1][0];
 		else if (s.in.kind)
 			infd = open_for(s.in, false);
+		else
+			infd = open_console();
 
 		int outfd = -1;
 		if (i + 1 < n)
@@ -572,8 +664,9 @@ static int run_pipeline(stage* st, int n, bool background) {
 			outfd = open_for(s.out, true);
 
 		if (i + 1 == n && !background) {
-			const bool had_in = s.in.kind != 0;
 			const bool had_out = s.out.kind != 0;
+
+			const bool infd_is_shells = (i == 0 && !s.in.kind);
 			int saved[2] = {-1, -1};
 			if (infd >= 0) {
 				saved[0] = vfs::dup2(0, 9);
@@ -595,7 +688,7 @@ static int run_pipeline(stage* st, int n, bool background) {
 				vfs::fd_close(saved[1]);
 			}
 
-			if (infd >= 0 && (i > 0 || had_in))
+			if (infd >= 0 && !infd_is_shells)
 				vfs::fd_close(infd);
 			if (outfd >= 0 && had_out)
 				vfs::fd_close(outfd);
@@ -618,20 +711,24 @@ static int run_pipeline(stage* st, int n, bool background) {
 		if (outfd >= 0)
 			map[nmap++] = {1, outfd};
 
-		const uint32_t pid = exec::spawn_mapped(pp, s.argc, s.word, map, nmap);
+		const bool had_in_here = (i > 0 || s.in.kind);
+
+		const uint32_t pid = exec::spawn_mapped(pp, s.argc, s.word, map, nmap, env_count(), env_vector());
 		if (!pid) {
 			terminal::printf("%s: could not start\n", s.word[0]);
 			status = 127;
 		}
-		if (infd >= 0 && (i == 0 || s.in.kind))
+		if (infd >= 0 && (i > 0 || had_in_here))
 			vfs::fd_close(infd);
 		if (outfd >= 0)
 			vfs::fd_close(outfd);
 
 		if (i > 0)
 			vfs::fd_close(pf[i - 1][0]);
-		if (background)
+		if (background) {
 			terminal::printf("[%u] %s\n", pid, pp);
+			task::set_foreground(task::find(pid));
+		}
 	}
 	if (background)
 		return 0;
@@ -725,6 +822,8 @@ static int run_job(char** line, char* op, bool go, int depth) {
 			return 0;
 		if (builtin_export(st[0].argc, st[0].word))
 			return 0;
+		if (builtin_env(st[0].argc, st[0].word))
+			return 0;
 		if (builtin_exit(st[0].argc, st[0].word))
 			return 0;
 	}
@@ -808,31 +907,41 @@ bool builtin_export(int argc, const char** argv) {
 		return true;
 	}
 	const char* eq = strchr(argv[1], '=');
-	const char* name = argv[1];
-	char value[64] = {0};
 	if (eq) {
+		char name[32];
 		const int nl = (int)(eq - argv[1]);
 		if (nl > 30) {
 			terminal::printf("export: %s: name too long\n", argv[1]);
 			return true;
 		}
 		for (int i = 0; i < nl; ++i)
-			((char*)name)[i] = eq[i]; // terminate over the '='
-		strncpy(value, eq + 1, sizeof value - 1);
+			name[i] = argv[1][i];
+		name[nl] = 0;
+		env_assign(name, eq + 1);
+	} else {
+		env_assign(argv[1], "");
 	}
-	for (int i = 0; i < g_nvar; ++i)
-		if (strcmp(g_var[i], name) == 0) {
-			strncpy(g_val[i], value, sizeof g_val[0] - 1);
-			g_val[i][sizeof g_val[0] - 1] = 0;
-			return true;
-		}
-	if (g_nvar >= 8) {
-		terminal::printf("export: too many variables\n");
+	return true;
+}
+
+bool builtin_env(int argc, const char** argv) {
+	if (strcmp(argv[0], "env") != 0)
+		return false;
+	if (argc == 1) {
+		for (int i = 0; i < g_env_n; ++i)
+			terminal::printf("%s\n", g_env[i]);
 		return true;
 	}
-	strncpy(g_var[g_nvar], name, sizeof g_var[0] - 1);
-	strncpy(g_val[g_nvar], value, sizeof g_val[0] - 1);
-	++g_nvar;
+	if (argc != 2) {
+		terminal::printf("usage: env [NAME]\n");
+		return true;
+	}
+	const char* v = getenv_from_shell(argv[1]);
+	if (!v) {
+		terminal::printf("env: %s not set\n", argv[1]);
+		return true;
+	}
+	terminal::printf("%s=%s\n", argv[1], v);
 	return true;
 }
 
@@ -1121,6 +1230,10 @@ void printf(const char* fmt, ...) {
 void print(const char* string) { printf(string); }
 
 void run() {
+	env_assign("PATH", "/bin");
+	env_assign("HOME", "/");
+	env_assign("TERM", "vt100");
+
 	for (;;) {
 		prompt();
 		if (task::take_signal(0) == task::kSigChild)

@@ -131,8 +131,11 @@ int dispatch(regs* r) {
 	case SYS_execve: {
 		const char* path = (const char*)r->ebx;
 		const char** av = (const char**)r->ecx;
+		const char** ev = (const char**)r->edx;
 		const char* argbuf[17];
+		const char* envbuf[33];
 		int argc = 0;
+		int envc = 0;
 		if (av) {
 			while (argc < 16 && av[argc]) {
 				argbuf[argc] = av[argc];
@@ -140,10 +143,18 @@ int dispatch(regs* r) {
 			}
 		}
 		argbuf[argc] = nullptr;
+
+		if (ev) {
+			while (envc < 32 && ev[envc]) {
+				envbuf[envc] = ev[envc];
+				++envc;
+			}
+		}
+		envbuf[envc] = nullptr;
 		if (!path)
 			return -kErrInval;
 
-		if (!exec::replace(path, argc, argbuf))
+		if (!exec::replace(path, argc, argbuf, envc, envbuf))
 			return -kErrNoEnt;
 
 		return 0;

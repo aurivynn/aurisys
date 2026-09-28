@@ -54,34 +54,92 @@ bool elf_ok(const elfhdr& eh) {
 
 // build the cdecl entry stack the apps crt0 expects: argc, then the argv pointers, then the strings themselves at the
 // top
-uint32_t build_stack(int argc, const char** argv) {
+uint32_t build_stack(const char* flat) {
+	const int arglen = ((const int*)flat)[0];
+	const int envc = ((const int*)flat)[1];
+	const char* p = flat + 8;
+
+	int argc = 0;
+	{
+		const char* q = p;
+		while ((int)(q - p) < arglen) {
+			q += strlen(q) + 1;
+			++argc;
+		}
+	}
+
 	const uint32_t top = kStackBase + kStackBytes;
 	uint32_t s = top;
 	uint32_t ptrs[16];
+	uint32_t eptrs[32];
+
 	for (int i = 0; i < argc; ++i) {
-		const uint32_t len = (uint32_t)strlen(argv[i]);
-		if (len + 1 > s - kStackBase)
+		const size_t n = strlen(p);
+		if (n + 1 > s - kStackBase)
 			return 0;
-		s -= len + 1;
-		memcpy((void*)s, argv[i], len + 1);
+		s -= (uint32_t)n + 1;
+		memcpy((void*)s, p, n + 1);
 		ptrs[i] = s;
+		p += n + 1;
 	}
+	for (int i = 0; i < envc; ++i) {
+		const size_t n = strlen(p);
+		if (n + 1 > s - kStackBase)
+			return 0;
+		s -= (uint32_t)n + 1;
+		memcpy((void*)s, p, n + 1);
+		eptrs[i] = s;
+		p += n + 1;
+	}
+
 	uint32_t sp = s;
-	if (sp - kStackBase < 4u * (uint32_t)(argc + 2) + 16u)
+
+	if (sp - kStackBase < 4u * (uint32_t)(argc + envc + 3) + 16u)
 		return 0;
-	sp -= 8; // a null pair, nothing else set yet
-	((uint32_t*)sp)[0] = 0;
-	((uint32_t*)sp)[1] = 0;
-	sp -= 4; // empty
+	sp -= 4; // the envp null
 	*(uint32_t*)sp = 0;
-	sp -= 4 * (uint32_t)(argc + 1); // the argv array
+	sp -= 4 * (uint32_t)envc; // the envp array
+	uint32_t* ev = (uint32_t*)sp;
+	for (int i = 0; i < envc; ++i)
+		ev[i] = eptrs[i];
+	sp -= 4; // the argv null
+	*(uint32_t*)sp = 0;
+	sp -= 4 * (uint32_t)argc; // the argv array
 	uint32_t* av = (uint32_t*)sp;
 	for (int i = 0; i < argc; ++i)
 		av[i] = ptrs[i];
-	av[argc] = 0;
 	sp -= 4; // argc
 	*(uint32_t*)sp = (uint32_t)argc;
 	return sp;
+}
+
+constexpr int kCopyArg = 16;
+constexpr int kCopyEnv = 32;
+constexpr int kCopyStr = 192;
+
+static char g_flat[8 + (kCopyArg + kCopyEnv) * kCopyStr];
+
+static bool copy_args(const char** av, int argc, const char** ev, int envc, char* out) {
+	char* p = out + 8;
+	for (int i = 0; i < argc; ++i) {
+		const size_t n = strlen(av[i]);
+		if (n >= kCopyStr)
+			return false; // would be truncated
+		memcpy(p, av[i], n + 1);
+		p += n + 1;
+	}
+
+	const size_t arglen = (size_t)(p - (out + 8));
+	for (int i = 0; i < envc; ++i) {
+		const size_t n = strlen(ev[i]);
+		if (n >= kCopyStr)
+			return false;
+		memcpy(p, ev[i], n + 1);
+		p += n + 1;
+	}
+	((int*)out)[0] = (int)arglen;
+	((int*)out)[1] = envc;
+	return true;
 }
 
 // give the process its own view of the code, the stack and the arena
@@ -111,7 +169,8 @@ bool map_image(task::task* t) {
 } // namespace
 
 // read the elf, build the process, leave it runnable. returns its pid or 0
-static bool load_into(task::task* t, const char* path, int argc, const char** argv, Registers* out) {
+static bool load_into(task::task* t, const char* path, int argc, const char** argv, int envc, const char** envp,
+					  Registers* out) {
 	if (argc < 0 || argc > 16)
 		return false;
 	const int fd = vfs::fd_open(path, 0);
@@ -145,6 +204,12 @@ static bool load_into(task::task* t, const char* path, int argc, const char** ar
 	}
 
 	paging::space* here = task::g_current ? task::g_current->sp : &paging::g_boot;
+
+	if (!copy_args(argv, argc, envp, envc, g_flat)) {
+		paging::space_switch(here);
+		vfs::fd_close(fd);
+		return false;
+	}
 	paging::space_switch(t->sp);
 	memset((void*)kAppBase, 0, kCodeBytes);
 	// every segment, the bss tail is inside the memset above
@@ -163,7 +228,7 @@ static bool load_into(task::task* t, const char* path, int argc, const char** ar
 			loaded = false;
 		}
 	}
-	const uint32_t esp = loaded ? build_stack(argc, argv) : 0;
+	const uint32_t esp = loaded ? build_stack(g_flat) : 0;
 	if (loaded && esp == 0) {
 		terminal::printf("%s: arg list too big\n", path);
 		loaded = false;
@@ -184,9 +249,12 @@ static bool load_into(task::task* t, const char* path, int argc, const char** ar
 	return true;
 }
 
-uint32_t spawn(const char* path, int argc, const char** argv) { return spawn_mapped(path, argc, argv, nullptr, 0); }
+uint32_t spawn(const char* path, int argc, const char** argv) {
+	return spawn_mapped(path, argc, argv, nullptr, 0, 0, nullptr);
+}
 
-uint32_t spawn_mapped(const char* path, int argc, const char** argv, const fdmap* map, int nmap) {
+uint32_t spawn_mapped(const char* path, int argc, const char** argv, const fdmap* map, int nmap, int envc,
+					  const char** envp) {
 	task::task* t = task::fork();
 	if (!t) {
 		terminal::printf("%s: no room for a process\n", path);
@@ -196,7 +264,7 @@ uint32_t spawn_mapped(const char* path, int argc, const char** argv, const fdmap
 	t->name[sizeof t->name - 1] = 0;
 
 	Registers r = {};
-	if (!load_into(t, path, argc, argv, &r)) {
+	if (!load_into(t, path, argc, argv, envc, envp, &r)) {
 		task::destroy(t);
 		return 0;
 	}
@@ -209,7 +277,7 @@ uint32_t spawn_mapped(const char* path, int argc, const char** argv, const fdmap
 	return t->pid;
 }
 
-bool replace(const char* path, int argc, const char** argv) {
+bool replace(const char* path, int argc, const char** argv, int envc, const char** envp) {
 	task::task* t = task::g_current;
 	if (!t || !t->sp)
 		return false;
@@ -240,7 +308,7 @@ bool replace(const char* path, int argc, const char** argv) {
 	t->owns_frames = true;
 
 	Registers r = {};
-	if (!load_into(t, path, argc, argv, &r)) {
+	if (!load_into(t, path, argc, argv, envc, envp, &r)) {
 		kframe_free(t->code_base);
 		kframe_free(t->stack_base);
 		kframe_free(t->heap_base);
@@ -279,9 +347,13 @@ bool run(const char* path, int argc, const char** argv, uint32_t* exit_code) {
 }
 
 bool run_mapped(const char* path, int argc, const char** argv, const fdmap* map, int nmap, uint32_t* exit_code) {
-	const uint32_t pid = spawn_mapped(path, argc, argv, map, nmap);
+	const int envc = terminal::env_count();
+	const char** envp = terminal::env_vector();
+	const uint32_t pid = spawn_mapped(path, argc, argv, map, nmap, envc, envp);
 	if (pid == 0)
 		return false;
+
+	task::set_foreground(task::find(pid));
 
 	task::task* t = nullptr;
 	for (;;) {
@@ -290,6 +362,8 @@ bool run_mapped(const char* path, int argc, const char** argv, const fdmap* map,
 			break;
 		task::yield();
 	}
+
+	task::clear_foreground(t);
 
 	const uint32_t code = t ? t->exit_code : 0;
 	const uint32_t sig = t ? t->signal : 0;

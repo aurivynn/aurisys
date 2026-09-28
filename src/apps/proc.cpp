@@ -26,6 +26,14 @@ static void on_term(int sig, sigframe* fp) {
 	got_term = 1;
 }
 
+static volatile int got_int = 0;
+
+static void on_int(int sig, sigframe* fp) {
+	(void)sig;
+	(void)fp;
+	got_int = 1;
+}
+
 int main(int argc, char** argv) {
 	(void)argc;
 	(void)argv;
@@ -76,7 +84,7 @@ int main(int argc, char** argv) {
 			av[0] = n0;
 			av[1] = n1;
 			av[2] = nullptr;
-			execve("/bin/echo", av);
+			execve("/bin/echo", av, nullptr);
 
 			exit(30);
 		}
@@ -90,7 +98,7 @@ int main(int argc, char** argv) {
 		char n0[] = "nosuch";
 		av[0] = n0;
 		av[1] = nullptr;
-		ok("execve of a missing file fails", execve("/bin/nosuch", av) < 0);
+		ok("execve of a missing file fails", execve("/bin/nosuch", av, nullptr) < 0);
 		ok("the process survives a failed exec", 1);
 	}
 
@@ -132,6 +140,47 @@ int main(int argc, char** argv) {
 		sa.flags = 0;
 		sa.mask = 0;
 		ok("sigaction refuses SIGKILL", sig_set(kSigKill, &sa, nullptr) < 0);
+	}
+
+	{
+		sigaction sa;
+		sa.handler = (uint32_t)(uintptr_t)on_int;
+		sa.flags = 0;
+		sa.mask = 0;
+		got_int = 0;
+		const int installed = sig_set(kSigInt, &sa, nullptr);
+		ok("sigaction installs a SIGINT handler", installed == 0);
+		if (installed == 0) {
+			char c = 0;
+			for (int i = 0; i < 200 && !got_int; ++i) {
+				if (read(0, &c, 1) > 0)
+					break;
+				sleep_ms(10);
+			}
+			ok("ctrl-c reached the process as a signal", got_int != 0);
+		}
+	}
+
+	// environment
+	{
+		char* av[3];
+		char n0[] = "showenv";
+		av[0] = n0;
+		av[1] = nullptr;
+		char* ev[4];
+		char e0[] = "AURISYS_PHASE4=envp";
+		char e1[] = "SECOND=two";
+		ev[0] = e0;
+		ev[1] = e1;
+		ev[2] = nullptr;
+		const int kid = fork();
+		if (kid == 0) {
+			execve("/bin/showenv", av, ev);
+			exit(31);
+		}
+		int st = 0;
+		const int got = waitpid(kid, &st);
+		ok("execve carries the environment to the new program", got == kid && st == 0);
 	}
 
 	// an uncaught signal kills
