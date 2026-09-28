@@ -3,10 +3,11 @@
 // com1, 115200 8n1. blocking io.
 namespace serial {
 
-void init();			  // poke the 16550 regs
-void putc(char c);		  // waits till the tx buffer opens up
-void puts(const char* s); // NUL-terminated
-int recv();				  // ascii or -1 if nothing waiting
-bool pending();			  // a byte is waiting, without taking it
+void init();					  // poke the 16550 regs
+void putc(char c);				  // waits till the tx buffer opens up
+void puts(const char* s);		  // NUL-terminated
+void write(const char* s, int n); // exactly n bytes, one call, so a trace cannot be split
+int recv();						  // ascii or -1 if nothing waiting
+bool pending();					  // a byte is waiting, without taking it
 
 } // namespace serial

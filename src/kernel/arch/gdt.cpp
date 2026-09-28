@@ -91,3 +91,8 @@ void gdt_init() {
 	asm volatile("mov %%ax, %%ds\n\tmov %%ax, %%es\n\tmov %%ax, %%fs\n\tmov %%ax, %%gs" : : "a"(kSelKernData));
 	asm volatile("ltr %%ax" : : "a"(kSelTss));
 }
+
+void gdt_set_kernel_stack(uint32_t esp0) {
+	g_tss.esp0 = esp0;
+	g_tss.ss0 = kSelKernData;
+}

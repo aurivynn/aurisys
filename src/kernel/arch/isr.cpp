@@ -1,5 +1,6 @@
 #include "arch/isr.h"
 
+#include "arch/paging.h"
 #include "drivers/console.h"
 #include "drivers/pic.h"
 #include "drivers/serial.h"
@@ -65,6 +66,17 @@ uint32_t fault_signal(int vec) {
 	}
 }
 
+static bool retry_cow_fault(const Registers* r) {
+	if (r->int_no != 14)
+		return false;
+	uint32_t cr2 = 0;
+	asm volatile("mov %%cr2, %0" : "=r"(cr2));
+	task::task* t = task::g_current;
+	if (!t)
+		return false;
+	return paging::space_cow_fault(t->sp, cr2);
+}
+
 // a bad instruction in a process is that process's problem, not the kernels. it dies of the signal the exception maps
 // to, and the scheduler carries on with whoever is next
 [[noreturn]] void kill_user_fault(const Registers* r) {
@@ -77,8 +89,10 @@ uint32_t fault_signal(int vec) {
 	if (r->int_no == 14)
 		note(" addr=%08x err=%08x", cr2, r->err_code);
 	note("\n");
-	if (t)
+	if (t) {
 		t->signal = fault_signal((int)r->int_no);
+		t->state = task::kKilled;
+	}
 	task::exit(128);
 }
 
@@ -92,6 +106,8 @@ void irq_install(int irq, irq_handler_t fn) {
 extern "C" void isr_common(Registers* r) {
 	if (r->int_no < 32) {
 		if (from_user(r)) {
+			if (retry_cow_fault(r))
+				return;
 			kill_user_fault(r); // does not return
 			return;
 		}

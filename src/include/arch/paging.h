@@ -5,6 +5,12 @@
 // 2m paging for the kernel, 4k pages for user space
 namespace paging {
 
+struct cow_group {
+	uint64_t* pt_code;
+	uint64_t* pt_heap;
+	uint32_t refs;
+};
+
 // one address space. cr3 points at pdpt
 struct space {
 	uint64_t pdpt[4];  // pdpt[0..3] point at pd[0..3]
@@ -12,6 +18,7 @@ struct space {
 	uint64_t* pt_code; // 4k pages for code and stack, the 2m slot at 0x40000000
 	uint64_t* pt_heap; // 4k pages for the process arena, the slot at 0x40200000
 	uint32_t refcount; // shared until later
+	cow_group* cow;
 };
 
 // the boot space
@@ -25,6 +32,12 @@ void space_destroy(space*); // drops the tables, frames are bump so they leak
 void space_switch(space*);	// cr3 + tlb flush
 space* space_current();
 uint32_t space_cr3(const space*); // cr3 as the cpu sees it, low bits masked
+
+// copy on write
+bool space_share_user(space* child, space* parent);
+
+// called from the page fault handler
+bool space_cow_fault(space* s, uint32_t addr);
 
 // 4k page mapping inside one space. the kernel range is 2m mapped so this only works for the user half, the kernel
 // keeps its big pages

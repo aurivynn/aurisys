@@ -1,6 +1,7 @@
 // the int 0x80 gate
 #include "syscall.h"
 
+#include "exec.h"
 #include "fs.h"
 #include "lib/heap.h"
 #include "lib/mem.h"
@@ -121,10 +122,92 @@ int dispatch(regs* r) {
 		return 0;
 	case SYS_panic:
 		panic("app requested a panic");
+
+	// processes
+	case SYS_fork: {
+		const uint32_t pid = task::fork_user((const Registers*)r);
+		return (int)pid;
 	}
-	return -1;
+	case SYS_execve: {
+		const char* path = (const char*)r->ebx;
+		const char** av = (const char**)r->ecx;
+		const char* argbuf[17];
+		int argc = 0;
+		if (av) {
+			while (argc < 16 && av[argc]) {
+				argbuf[argc] = av[argc];
+				++argc;
+			}
+		}
+		argbuf[argc] = nullptr;
+		if (!path)
+			return -kErrInval;
+
+		if (!exec::replace(path, argc, argbuf))
+			return -kErrNoEnt;
+
+		return 0;
+	}
+	case SYS_wait: {
+		uint32_t code = 0;
+		const int32_t pid = task::wait_for((int32_t)r->ebx, &code);
+
+		if (pid > 0)
+			*(uint32_t*)r->ecx = code;
+		return (int)pid;
+	}
+	case SYS_kill: {
+		if (r->ecx >= (uint32_t)kSigMax)
+			return -kErrInval;
+		return task::kill(r->ebx, r->ecx) ? 0 : -kErrSrch;
+	}
+	case SYS_getpid:
+		return task::g_current ? (int)task::g_current->pid : -kErrInval;
+	case SYS_getppid:
+		return task::g_current ? (int)task::g_current->ppid : -kErrInval;
+	case SYS_dup:
+		return vfs::dup2((int)r->ebx, vfs::next_free());
+	case SYS_dup2: {
+		const int nw = vfs::dup2((int)r->ebx, (int)r->ecx);
+		return nw < 0 ? -kErrBadf : nw;
+	}
+	case SYS_sleep: {
+		const uint32_t ms = r->ebx;
+		const uint32_t ticks = (ms + 9u) / 10u;
+		return task::sleep_ticks(ticks);
+	}
+	case SYS_sigaction: {
+		const uint32_t sig = r->ebx;
+		if (sig == 0 || sig >= (uint32_t)kSigMax || !task::g_current)
+			return -kErrInval;
+		const sigaction* in = (const sigaction*)r->ecx;
+		sigaction* old = (sigaction*)r->edx;
+		task::task* t = task::g_current;
+		if (old) {
+			old->handler = t->sig_handlers[sig];
+			old->mask = t->sig_masks[sig];
+			old->flags = 0;
+		}
+		if (in) {
+			// SIGKILL and SIGSTOP cannot be caught
+			if (sig == kSigKill)
+				return -kErrInval;
+			t->sig_handlers[sig] = in->handler;
+			t->sig_masks[sig] = in->mask;
+		}
+		return 0;
+	}
+	case SYS_sigreturn:
+		task::sigreturn((Registers*)r);
+		return 0;
+	}
+	return -kErrInval;
 }
 
 } // namespace
 
-extern "C" uint32_t syscall_dispatch(regs* r) { return (uint32_t)dispatch(r); }
+extern "C" uint32_t syscall_dispatch(regs* r) {
+	const uint32_t out = (uint32_t)dispatch(r);
+	task::deliver_pending(task::g_current, (Registers*)r);
+	return out;
+}

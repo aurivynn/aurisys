@@ -37,6 +37,11 @@ void puts(const char* s) {
 		putc(*s++);
 }
 
+void write(const char* s, int n) {
+	for (int i = 0; i < n; ++i)
+		putc(s[i]);
+}
+
 int recv() {
 	if ((inb(COM1 + 5) & 1) == 0)
 		return -1; // rx fifo empty

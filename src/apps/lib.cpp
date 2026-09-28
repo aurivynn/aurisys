@@ -38,6 +38,34 @@ int uptime_ms() {
 	return (int)ms;
 }
 
+int fork() { return (int)trp(SYS_fork, 0, 0, 0, 0, 0); }
+
+int execve(const char* path, char* const argv[]) {
+	return (int)trp(SYS_execve, (uint32_t)(uintptr_t)path, (uint32_t)(uintptr_t)argv, 0, 0, 0);
+}
+
+int waitpid(int pid, int* status) {
+	int code = 0;
+	const int r = (int)trp(SYS_wait, (uint32_t)pid, (uint32_t)(uintptr_t)&code, 0, 0, 0);
+	if (status)
+		*status = (code >= 128 && code < 128 + 32) ? code : code << 8;
+	return r;
+}
+
+int wait(int* status) { return waitpid(0, status); }
+
+int kill(int pid, int sig) { return (int)trp(SYS_kill, (uint32_t)pid, (uint32_t)sig, 0, 0, 0); }
+
+int getpid() { return (int)trp(SYS_getpid, 0, 0, 0, 0, 0); }
+int getppid() { return (int)trp(SYS_getppid, 0, 0, 0, 0, 0); }
+int dup(int fd) { return (int)trp(SYS_dup, (uint32_t)fd, 0, 0, 0, 0); }
+int dup2(int fd, int nw) { return (int)trp(SYS_dup2, (uint32_t)fd, (uint32_t)nw, 0, 0, 0); }
+int sleep_ms(uint32_t ms) { return (int)trp(SYS_sleep, ms, 0, 0, 0, 0); }
+
+int sig_set(int sig, const sigaction* act, sigaction* old) {
+	return (int)trp(SYS_sigaction, (uint32_t)sig, (uint32_t)(uintptr_t)act, (uint32_t)(uintptr_t)old, 0, 0);
+}
+
 int brk(uint32_t addr) { return (int)(uint32_t)trp(SYS_brk, addr, 0, 0, 0, 0); }
 
 int sbrk(int delta) { return (int)(uint32_t)trp(SYS_sbrk, (uint32_t)(int32_t)delta, 0, 0, 0, 0); }

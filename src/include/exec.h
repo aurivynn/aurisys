@@ -23,4 +23,6 @@ bool run(const char* path, int argc, const char** argv, uint32_t* exit_code);
 // as run, with descriptors installed in the child first
 bool run_mapped(const char* path, int argc, const char** argv, const fdmap* map, int nmap, uint32_t* exit_code);
 
+bool replace(const char* path, int argc, const char** argv);
+
 } // namespace exec

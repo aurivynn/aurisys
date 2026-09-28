@@ -384,12 +384,6 @@ static int glob_stage(stage& cur, char words[kMaxWord][kWordMax], int slot) {
 	if (!d)
 		return cur.argc;
 
-	// the words a stage runs are pointers, and these point into hits, so hits
-	// has to outlive this function. it used to be on the stack, which meant the
-	// program got whatever the next call put there, and a glob quietly turned
-	// into the name of the program being run. the shell parses one command at a
-	// time and nothing below here starts another parse, so a single static is
-	// enough
 	static char hits[kMaxWord][kWordMax];
 	int nh = 0;
 	for (uint32_t i = 0; i < 64 && nh < kMaxWord - slot; ++i) {

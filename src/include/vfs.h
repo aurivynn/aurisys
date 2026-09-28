@@ -62,6 +62,7 @@ int fd_read(int fd, void* buf, uint32_t len);
 int fd_write(int fd, const void* buf, uint32_t len);
 int lseek(int fd, int off, int whence); // 0 set, 1 cur, 2 end, new offset out
 int dup2(int old, int nw);				// point nw at old, closing nw first
+int next_free();						// the lowest unused descriptor or -1
 int fd_install(task::task* into, int child_fd, int from);
 
 int fd_mem(void* buf, uint32_t size);

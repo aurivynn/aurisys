@@ -32,5 +32,19 @@ int sbrk(int delta);
 int printf(const char* fmt, ...);
 bool is_dot(const char* n);
 
+int fork();
+int execve(const char* path, char* const argv[]);
+int wait(int* status);
+int waitpid(int pid, int* status);
+int kill(int pid, int sig);
+int getpid();
+int getppid();
+int dup(int fd);
+int dup2(int fd, int nw);
+int sleep_ms(uint32_t ms);
+
+typedef void (*sig_handler)(int sig, sigframe* fp);
+int sig_set(int sig, const sigaction* act, sigaction* old);
+
 extern "C" void exit(int code);
 extern "C" int main(int argc, char** argv);

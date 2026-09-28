@@ -22,16 +22,25 @@ task_switch_asm:
     mov esi, [edx + 4]
     mov edi, [edx + 8]
     mov ebp, [edx + 12]
+    mov eax, [edx + 24]
+    mov ecx, [edx + 28]
+    pop ebp
+    pop edi
+    pop esi
+    pop ebx
     sti
     ret ; pops the return address the suspend recorded
 
 task_suspend_asm:
-    mov ecx, [esp + 4] ; the slot
-    mov [ecx + 20], esp ; entry esp
+    mov edx, [esp + 4] ; the slot
+    mov [edx + 24], eax
+    mov [edx + 28], ecx
+    mov ecx, edx
     push ebx
     push esi
     push edi
     push ebp
+    mov [ecx + 20], esp
     mov [ecx + 0], ebx
     mov [ecx + 4], esi
     mov [ecx + 8], edi

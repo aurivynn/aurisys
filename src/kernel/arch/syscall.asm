@@ -9,6 +9,8 @@ EXTERN syscall_dispatch
 
 ; the int 0x80 gate. apps are ring 3 so traps land on the tss stack
 syscall_stub:
+    push dword 0 ; err code, same as an exception with no error
+    push dword 0x80 ; the vector
     pushad
     mov ax, 0x10
     mov ds, ax
@@ -16,10 +18,9 @@ syscall_stub:
     push esp
     call syscall_dispatch
     add esp, 4
-    ; popad would clobber the result in eax
-    mov [g_sys_ret], eax
+    mov [esp + 28], eax ; 7 * 4, the eax slot
     popad
-    mov eax, [g_sys_ret]
+    add esp, 8 ; the vector and err code, as isr_common_entry does
     ; iret never restores the data segments
     cmp dword [esp + 4], 0x1b
     jne .to_kernel
@@ -80,9 +81,7 @@ SECTION .data
 align 4
 GLOBAL g_exec_ctx_esp
 GLOBAL g_exec_ctx_ret
-GLOBAL g_sys_ret
 g_exec_ctx_esp: dd 0
 g_exec_ctx_ret: dd 0
-g_sys_ret: dd 0
 
 SECTION .note.GNU-stack noalloc noexec nowrite progbits

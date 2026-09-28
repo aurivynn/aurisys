@@ -377,7 +377,8 @@ struct pipebuf {
 	uint32_t n;	   // bytes in it
 	int32_t readers;
 	int32_t writers;
-	task::task* waiting;
+	task::task* rd_wait; // a reader parked because there is nothing to read
+	task::task* wr_wait; // a writer parked because there is no room to write
 	int open;
 };
 
@@ -447,20 +448,24 @@ static void close_in(task::task* t, int fd) {
 	if (g_fd[fd].n.type == kTypeFifo) {
 		pipebuf* p = (pipebuf*)g_fd[fd].n.internal;
 		if (p) {
-			if (g_fd[fd].flags & kPipeWriteEnd)
+			const bool write_end = (g_fd[fd].flags & kPipeWriteEnd) != 0;
+			if (write_end)
 				--p->writers;
 			else
 				--p->readers;
-
-			if (p->waiting) {
-				if ((g_fd[fd].flags & kPipeWriteEnd) || p->n)
-					task::unblock(p->waiting);
-				p->waiting = nullptr;
-			}
 			if (p->writers < 0)
 				p->writers = 0;
 			if (p->readers < 0)
 				p->readers = 0;
+
+			if (write_end && !p->writers && p->rd_wait) {
+				task::unblock(p->rd_wait);
+				p->rd_wait = nullptr;
+			}
+			if (!write_end && !p->readers && p->wr_wait) {
+				task::unblock(p->wr_wait);
+				p->wr_wait = nullptr;
+			}
 
 			if (!p->writers && !p->readers)
 				p->open = 0;
@@ -539,23 +544,21 @@ int pipe_rd(node* n, void* buf, uint32_t, uint32_t len) {
 	if (!p)
 		return -1;
 
-	while (p->n == 0) {
-		if (!p->writers)
-			return 0; // every writer has gone
-		p->waiting = task::g_current;
-		task::block();
-		p->waiting = nullptr;
-	}
+	while (p->n == 0 && p->writers)
+		task::block_on(&p->rd_wait);
+	if (p->n == 0)
+		return 0; // every writer has gone
+
 	uint32_t got = 0;
 	while (got < len && p->n) {
 		((uint8_t*)buf)[got++] = p->buf[p->tail];
 		p->tail = (p->tail + 1u) % kPipeBytes;
 		--p->n;
 	}
-	// there is room again
-	if (p->waiting) {
-		task::unblock(p->waiting);
-		p->waiting = nullptr;
+	// there is room again, so a writer parked on a full pipe can go
+	if (p->wr_wait) {
+		task::unblock(p->wr_wait);
+		p->wr_wait = nullptr;
 	}
 	return (int)got;
 }
@@ -567,26 +570,18 @@ int pipe_wr(node* n, const void* buf, uint32_t, uint32_t len) {
 	const uint8_t* s = (const uint8_t*)buf;
 	uint32_t put = 0;
 	while (put < len) {
-		if (p->n == kPipeBytes) {
-			// full so wait for a reader
-			if (!p->readers)
-				return -1;
-			p->waiting = task::g_current;
-			task::block();
-			p->waiting = nullptr;
-			if (!p->open)
-				return -1;
-			continue;
-		}
+		while (p->n == kPipeBytes && p->readers)
+			task::block_on(&p->wr_wait);
+		if (p->n == kPipeBytes)
+			return -1;
 		p->buf[p->head] = s[put++];
 		p->head = (p->head + 1u) % kPipeBytes;
 		++p->n;
-	}
 
-	// something to read
-	if (p->waiting) {
-		task::unblock(p->waiting);
-		p->waiting = nullptr;
+		if (p->rd_wait) {
+			task::unblock(p->rd_wait);
+			p->rd_wait = nullptr;
+		}
 	}
 	return (int)put;
 }
@@ -723,6 +718,16 @@ int lseek(int fd, int off, int whence) {
 }
 
 // point one fd at the same open file, vacating the target first
+int next_free() {
+	ofile* g_fd = fds();
+	if (!g_fd)
+		return -1;
+	for (int i = 0; i < kMaxFd; ++i)
+		if (!g_fd[i].n.type)
+			return i;
+	return -1;
+}
+
 int dup2(int old, int nw) {
 	ofile* g_fd = fds();
 	if (!g_fd)

@@ -63,6 +63,7 @@ block* split(block* b, uint32_t bytes) {
 	b->size = bytes | kMagic;
 	b->next = tail;
 	tail->prev = b;
+	tail->next = after;
 	if (after)
 		after->prev = tail;
 	return tail;
@@ -201,10 +202,10 @@ void* kframe_alloc_n(uint32_t pages) {
 		uint8_t* payload = (uint8_t*)b + sizeof(block);
 		if (((uint32_t)payload & (kPage - 1u)) != 0) {
 			const uint32_t room = bsize(b);
-			if (room < want + kPage)
-				continue;
 			const uint32_t cut = align_up((uint32_t)payload, kPage) - kAlign - (uint32_t)b;
-			if (cut < kMinBlock || cut > room - want)
+			if (cut > room || room - cut < want)
+				continue;
+			if (cut < kMinBlock)
 				continue;
 			block* left = b;
 			block* right = (block*)((uint8_t*)left + cut);
@@ -215,6 +216,7 @@ void* kframe_alloc_n(uint32_t pages) {
 			left->size = cut | kMagic;
 			left->next = right;
 			right->prev = left;
+			right->next = after;
 			if (after)
 				after->prev = right;
 			b = right;

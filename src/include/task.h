@@ -2,6 +2,7 @@
 
 #include "arch/isr.h"
 #include "arch/paging.h"
+#include "syscall.h"
 #include "vfs.h"
 
 #include <stdint.h>
@@ -30,6 +31,7 @@ enum : uint32_t {
 	kSigKill = 9,	// cannot be caught
 	kSigSegv = 11,	// touched something it should not have
 	kSigTerm = 15,	// asked to stop
+	kSigInt = 2,	// ctrl c
 	kSigNone = 0,
 };
 
@@ -63,14 +65,32 @@ struct task {
 	char cwd[128];
 
 	// where to pick this process up again
-	uint32_t kslot[6]; // ebx esi edi ebp, return address, entry esp
+	uint32_t kslot[8]; // ebx esi edi ebp, return address, entry esp, eax, ecx
 	uint32_t quantum;  // ticks left before it is moved along
 	uint32_t utime;	   // ticks it has actually had, for /proc
 	uint32_t ktime;	   // ticks it spent in the kernel, for /proc
 
 	// children that have ended and not been collected yet, oldest first
 	uint32_t done_pid[kMaxTask];
-	uint8_t done_n; // how many entries of done_pid are live
+	uint32_t done_code[kMaxTask]; // how it ended
+	uint8_t done_n;				  // how many entries of done_pid are live
+	bool waiting;				  // parked in wait() so reap knows to wake it
+	int wait_pid;				  // the pid it asked for, or 0 for any child
+
+	uint8_t wake_pending;
+
+	// signals
+	uint32_t sig_handlers[kSigMax]; // user addresses 0 for the default action
+	uint32_t sig_masks[kSigMax];	// what each handler asked to hold off
+	uint32_t sig_mask;				// blocked right now
+	uint32_t sig_pending;			// one waiting enough for a queue of one
+	uint32_t sig_active;			// the signal whose handler is running
+	uint32_t sig_saved_mask;		// the mask to put back when it returns
+	uint32_t sleep_until;			// tick it is asleep until 0 if awake
+
+	bool in_syscall;
+	bool owns_frames;
+	bool armed;
 };
 
 constexpr uint32_t kArenaBytes = 1024u * 1024u;
@@ -89,6 +109,9 @@ extern task g_tasks[kMaxTask];
 extern task* g_current;
 
 task* create(const char* name, const char* argv0); // fresh space, fresh fds
+
+void arm(task* t);
+bool give_frames(task* t);
 void destroy(task* t);
 task* find(uint32_t pid);
 task* by_pid(uint32_t pid);
@@ -101,20 +124,29 @@ void yield();	 // same thing, spelled for callers that block
 
 // off the run queue until somebody unblocks us, and back on it when they do
 void block();
+void block_on(task** slot);
 void unblock(task* t);
-void on_tick();				// the pit handler calls this
-bool preempt(Registers* r); // true if the tick took the cpu away
-int runnable();				// how many are ready, for the boot test
+uint32_t ticks_now();		 // timer interrupts since boot
+int sleep_ticks(uint32_t n); // park for n ticks, or until a signal arrives
+void on_tick();				 // the pit handler calls this
+bool preempt(Registers* r);	 // true if the tick took the cpu away
+int runnable();				 // how many are ready, for the boot test
 
 // fork the current process
 task* fork();
 
+uint32_t fork_user(const Registers* frame);
+
 // end the current process
 [[noreturn]] void exit(int code);
+[[noreturn]] void resume_after_exec();
 
 // signals
 bool kill(uint32_t pid, uint32_t sig);
 void reap(); // collect the zombies, tell the parents
+int32_t wait_for(int32_t pid, uint32_t* code);
+void deliver_pending(task* t, Registers* r);
+void sigreturn(Registers* r);
 uint32_t take_signal(uint32_t for_pid);
 int alive(); // processes that are not free, the shell included
 
