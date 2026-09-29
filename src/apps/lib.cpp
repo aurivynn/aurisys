@@ -39,6 +39,9 @@ int tty_get(int fd, uint32_t* flags) { return ioctl(fd, kIoctlGetFlags, flags); 
 
 int tty_set(int fd, uint32_t flags) { return ioctl(fd, kIoctlSetFlags, &flags); }
 
+int tty_get_owner(int fd, uint32_t* pid) { return ioctl(fd, kIoctlGetOwner, pid); }
+int tty_set_owner(int fd, uint32_t pid) { return ioctl(fd, kIoctlSetOwner, &pid); }
+
 int tty_raw(int fd) { return tty_set(fd, 0); }
 
 int tty_echo(int fd, int on) {
@@ -62,15 +65,15 @@ int execve(const char* path, char* const argv[], char* const envp[]) {
 	return (int)trp(SYS_execve, (uint32_t)(uintptr_t)path, (uint32_t)(uintptr_t)argv, (uint32_t)(uintptr_t)envp, 0, 0);
 }
 
-int waitpid(int pid, int* status) {
+int waitpid(int pid, int* status, uint32_t flags) {
 	int code = 0;
-	const int r = (int)trp(SYS_wait, (uint32_t)pid, (uint32_t)(uintptr_t)&code, 0, 0, 0);
+	const int r = (int)trp(SYS_wait, (uint32_t)pid, (uint32_t)(uintptr_t)&code, flags, 0, 0);
 	if (status)
 		*status = (code >= 128 && code < 128 + 32) ? code : code << 8;
 	return r;
 }
 
-int wait(int* status) { return waitpid(0, status); }
+int wait(int* status) { return waitpid(0, status, 0); }
 
 int kill(int pid, int sig) { return (int)trp(SYS_kill, (uint32_t)pid, (uint32_t)sig, 0, 0, 0); }
 

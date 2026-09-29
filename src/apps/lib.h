@@ -32,7 +32,10 @@ int ioctl(int fd, uint32_t req, void* arg);
 int tty_get(int fd, uint32_t* flags); // the modes as they are
 int tty_set(int fd, uint32_t flags);  // and back to canonical
 int tty_raw(int fd);				  // everything off
-int tty_echo(int fd, int on);		  // keep the discipline echoing or not
+
+int tty_get_owner(int fd, uint32_t* pid);
+int tty_set_owner(int fd, uint32_t pid);
+int tty_echo(int fd, int on); // keep the discipline echoing or not
 
 int brk(uint32_t addr);
 int sbrk(int delta);
@@ -45,7 +48,7 @@ int execve(const char* path, char* const argv[], char* const envp[]);
 extern char** environ;
 char* getenv(const char* name);
 int wait(int* status);
-int waitpid(int pid, int* status);
+int waitpid(int pid, int* status, uint32_t flags);
 int kill(int pid, int sig);
 int getpid();
 int getppid();

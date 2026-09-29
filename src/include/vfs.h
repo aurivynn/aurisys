@@ -70,6 +70,8 @@ int dup2(int old, int nw); // point nw at old, closing nw first
 int next_free();		   // the lowest unused descriptor or -1
 int fd_install(task::task* into, int child_fd, int from);
 
+void tty_drain();
+
 int fd_mem(void* buf, uint32_t size);
 node* fd_node(int fd);
 
@@ -85,7 +87,7 @@ constexpr uint32_t kPipeBytes = 4096;
 // a private bit on the ofile saying which end of a pipe it is.
 constexpr uint32_t kPipeWriteEnd = 0x10000u;
 
-const char* path();												// the PATH string, colon separated
+const char* path();												// the kernels own search path, for its own use
 bool find_in_path(const char* name, char* out, uint32_t outsz); // first hit wins
 
 } // namespace vfs

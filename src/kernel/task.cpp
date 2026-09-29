@@ -6,6 +6,7 @@
 #include "drivers/serial.h"
 #include "lib/heap.h"
 #include "lib/mem.h"
+#include "lib/panic.h"
 #include "lib/str.h"
 #include "shell/terminal.h"
 
@@ -15,18 +16,6 @@ namespace task {
 
 task g_tasks[kMaxTask];
 task* g_current = nullptr;
-
-namespace {
-task* g_foreground = nullptr;
-} // namespace
-
-void set_foreground(task* t) { g_foreground = t; }
-task* foreground() { return g_foreground; }
-
-void clear_foreground(task* t) {
-	if (g_foreground == t)
-		g_foreground = nullptr;
-}
 
 namespace {
 
@@ -79,6 +68,13 @@ task* by_pid(uint32_t pid) { return find(pid); }
 void arm(task* t) {
 	if (t)
 		t->armed = true;
+}
+
+[[noreturn]] void become_first() {
+	g_tasks[0].in_syscall = false;
+	g_tasks[0].state = kReady;
+	for (;;)
+		yield();
 }
 
 bool give_frames(task* t) {
@@ -230,6 +226,7 @@ task* init() {
 
 	g_tasks[0].armed = true;
 	strcpy(g_tasks[0].name, "init");
+	strcpy(g_tasks[0].cwd, "/");
 	return g_current;
 }
 
@@ -325,9 +322,8 @@ extern "C" void task_switch_now() {
 	if (to && (to->state == kZombie || to->state == kKilled))
 		to = nullptr;
 	if (!to) {
-		if (g_current->state == kBlocked)
+		while (!(to = pick()))
 			__asm__ volatile("sti; hlt");
-		return;
 	}
 	switch_to(to);
 }
@@ -400,6 +396,8 @@ void on_tick() {
 	task* t = g_current;
 	if (t)
 		++t->utime;
+	vfs::tty_drain();
+
 	if (serial::pending())
 		kbd::wake();
 }
@@ -417,10 +415,10 @@ int sleep_ticks(uint32_t ticks) {
 	t->sleep_until = ticks_now() + ticks;
 	block();
 
-	if (t->sig_pending) {
-		t->sleep_until = 0;
+	t->sleep_until = 0;
+
+	if (t->sig_pending)
 		return -kErrIntr;
-	}
 	return 0;
 }
 
@@ -433,20 +431,20 @@ bool preempt(Registers* r) {
 
 	if (!dead) {
 		if ((r->cs & 3u) != 3u)
-			return false;
+			return false; // in the kernel: there is no user state to keep
 		if (t->quantum && --t->quantum)
 			return false;
 	}
-	reap();
-	task* to = pick();
-	if (!to || to == t)
-		return false;
 
-	// a corpse is never coming back
 	if (!dead) {
 		t->regs = *r;
 		t->in_syscall = false;
 	}
+
+	reap();
+	task* to = pick();
+	if (!to || to == t)
+		return false;
 	switch_to(to);
 	return true;
 }
@@ -515,7 +513,8 @@ static bool deliver(task* t, Registers* r, uint32_t sig) {
 	memcpy(f->tramp, code, sizeof code);
 
 	r->eip = handler;
-	r->user_esp = fp + (uint32_t)offsetof(sigframe, ret);
+
+	r->user_esp = fp;
 	r->esp_dummy = r->user_esp;
 
 	t->sig_saved_mask = t->sig_mask;
@@ -524,7 +523,8 @@ static bool deliver(task* t, Registers* r, uint32_t sig) {
 	return true;
 }
 
-bool kill(uint32_t pid, uint32_t sig) {
+// raise a signal at a process and stop there
+bool signal_task(uint32_t pid, uint32_t sig) {
 	task* t = find(pid);
 	if (!t)
 		return false;
@@ -541,7 +541,13 @@ bool kill(uint32_t pid, uint32_t sig) {
 
 	t->signal = sig;
 	t->state = kKilled;
-	if (t == g_current)
+	return true;
+}
+
+bool kill(uint32_t pid, uint32_t sig) {
+	if (!signal_task(pid, sig))
+		return false;
+	if (g_current && g_current->pid == pid)
 		exit(128 + (int)sig);
 	return true;
 }
@@ -555,11 +561,11 @@ void sigreturn(Registers* r) {
 		return;
 
 	const uint32_t sp = r->user_esp;
-	if (sp < (uint32_t)offsetof(sigframe, arg0)) {
+	if (sp < sizeof(uint32_t)) {
 		t->signal = kSigSegv;
 		exit(128 + kSigSegv);
 	}
-	sigframe* f = (sigframe*)(uintptr_t)(sp - (uint32_t)offsetof(sigframe, arg0));
+	sigframe* f = (sigframe*)(uintptr_t)(sp - (uint32_t)sizeof(uint32_t));
 
 	r->edi = f->edi;
 	r->esi = f->esi;
@@ -613,6 +619,9 @@ static void announce(task* t) {
 }
 
 void reap() {
+	if (g_tasks[0].pid == 1 && (g_tasks[0].state == kZombie || g_tasks[0].state == kKilled))
+		panic("init exited, and there is nothing to replace it with");
+
 	for (int i = 1; i < kMaxTask; ++i) {
 		task* t = &g_tasks[i];
 		if (t->state == kKilled) {
@@ -643,7 +652,7 @@ static int32_t take_done(task* t, int32_t pid, uint32_t* code) {
 	return 0;
 }
 
-int32_t wait_for(int32_t pid, uint32_t* code) {
+int32_t wait_for(int32_t pid, uint32_t* code, bool nowait) {
 	task* t = g_current;
 	if (!t)
 		return -kErrInval;
@@ -671,6 +680,10 @@ int32_t wait_for(int32_t pid, uint32_t* code) {
 
 		t->waiting = true;
 		t->wait_pid = pid;
+		if (nowait) {
+			t->waiting = false;
+			return 0;
+		}
 
 		block();
 
@@ -680,30 +693,6 @@ int32_t wait_for(int32_t pid, uint32_t* code) {
 			return -kErrIntr;
 		}
 	}
-}
-
-int console_key() {
-	int c = kbd::poll();
-	if (c < 0)
-		c = (int)serial::recv();
-	if (c != 0x03)
-		return c;
-
-	if (g_foreground && g_foreground->state != kRunning)
-		g_foreground = nullptr;
-
-	task* fg = g_foreground;
-
-	if (fg && fg != g_current) {
-		kill(fg->pid, kSigInt);
-		return -1;
-	}
-	if (fg && fg == g_current && g_current->pid != kPid1) {
-		kill(fg->pid, kSigInt);
-		return -1;
-	}
-
-	return c;
 }
 
 uint32_t take_signal(uint32_t for_pid) {
@@ -724,13 +713,16 @@ task* fork() { return create("child", "child"); }
 
 [[noreturn]] void resume_after_exec() {
 	task* t = g_current;
-	if (t) {
-		t->in_syscall = false;
-		t->state = kRunning;
-	}
+	if (!t)
+		for (;;)
+			__asm__ volatile("cli; hlt");
 
+	t->in_syscall = false;
+	t->state = kRunning;
+	push_frame(t, t->regs);
+	task_switch_asm(resume_esp(t), 0, 1, t->kslot);
 	for (;;)
-		schedule();
+		__asm__ volatile("cli; hlt"); // not reached
 }
 
 uint32_t fork_user(const Registers* frame) {

@@ -1,6 +1,7 @@
 // the int 0x80 gate
 #include "syscall.h"
 
+#include "drivers/timer.h"
 #include "exec.h"
 #include "fs.h"
 #include "lib/heap.h"
@@ -165,7 +166,7 @@ int dispatch(regs* r) {
 		return task::chdir((const char*)r->ebx) ? 0 : -kErrNoEnt;
 	case SYS_wait: {
 		uint32_t code = 0;
-		const int32_t pid = task::wait_for((int32_t)r->ebx, &code);
+		const int32_t pid = task::wait_for((int32_t)r->ebx, &code, (r->edx & kWNohang) != 0);
 
 		if (pid > 0)
 			*(uint32_t*)r->ecx = code;
@@ -188,8 +189,7 @@ int dispatch(regs* r) {
 	}
 	case SYS_sleep: {
 		const uint32_t ms = r->ebx;
-		const uint32_t ticks = (ms + 9u) / 10u;
-		return task::sleep_ticks(ticks);
+		return task::sleep_ticks(ticks_for_ms(ms));
 	}
 	case SYS_sigaction: {
 		const uint32_t sig = r->ebx;

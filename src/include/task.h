@@ -108,12 +108,6 @@ uint32_t task_sbrk(task* t, int delta);
 extern task g_tasks[kMaxTask];
 extern task* g_current;
 
-void set_foreground(task* t);
-task* foreground();
-void clear_foreground(task* t);
-
-int console_key();
-
 task* create(const char* name, const char* argv0); // fresh space, fresh fds
 
 void arm(task* t);
@@ -127,6 +121,9 @@ task* init(); // pid 1, the shell
 
 void schedule(); // give up the cpu, come back when picked again
 void yield();	 // same thing, spelled for callers that block
+
+// give the machine to the first process
+[[noreturn]] void become_first();
 
 // off the run queue until somebody unblocks us, and back on it when they do
 void block();
@@ -149,8 +146,11 @@ uint32_t fork_user(const Registers* frame);
 
 // signals
 bool kill(uint32_t pid, uint32_t sig);
+// like kill, but never ends the process on the spot, so it is safe to call from a tick. see the comment on it in
+// task.cpp.
+bool signal_task(uint32_t pid, uint32_t sig);
 void reap(); // collect the zombies, tell the parents
-int32_t wait_for(int32_t pid, uint32_t* code);
+int32_t wait_for(int32_t pid, uint32_t* code, bool nowait);
 void deliver_pending(task* t, Registers* r);
 void sigreturn(Registers* r);
 uint32_t take_signal(uint32_t for_pid);

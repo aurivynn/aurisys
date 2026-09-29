@@ -5,6 +5,7 @@
 #include "drivers/pic.h"
 #include "drivers/serial.h"
 #include "lib/print.h"
+#include "task.h"
 
 #include <stdarg.h>
 #include <stdint.h>
@@ -87,6 +88,18 @@ const char* fault_name(int vec) {
 			asm volatile("mov %%cr2, %0" : "=r"(cr2));
 		bothf("CS=%04x EFLAGS=%08x ERR=%08x CR2=%08x\n", r->cs, r->eflags, r->err_code, cr2);
 	}
+
+	task::task* t = task::g_current;
+	if (t) {
+		bothf("TASK pid=%u ppid=%u state=%d in_syscall=%d sig_pending=%u sig_active=%u\n", t->pid, t->ppid,
+			  (int)t->state, t->in_syscall ? 1 : 0, t->sig_pending, t->sig_active);
+		bothf("TASK saved_cs=%04x saved_eip=%08x user_esp=%08x kstack=%08x ksp=%08x\n", t->regs.cs, t->regs.eip,
+			  t->regs.user_esp, t->kstack, t->kslot[0]);
+		bothf("TASK name=%s\n", t->name);
+	} else {
+		bothf("TASK none\n");
+	}
+
 	bothf("-- halted --\n");
 
 	outb(0xf4, 0);

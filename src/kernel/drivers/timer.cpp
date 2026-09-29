@@ -22,6 +22,13 @@ uint32_t ms() { return (uint32_t)g_ms; }
 
 } // namespace time
 
+constexpr uint32_t kPitHz = 1193182u;
+
+uint32_t ticks_for_ms(uint32_t ms) {
+	const uint32_t num = ms * kPitHz + kReload * 500u;
+	return num / (kReload * 1000u);
+}
+
 void timer_init() {
 	outb(0x43, 0x34); // ch0, mode 2 (rate gen), lobyte/hibyte
 	outb(0x40, kReload & 0xFF);

@@ -65,7 +65,7 @@ int main(int argc, char** argv) {
 		}
 		ok("fork returned a pid", kid > 0);
 		int st = 0;
-		const int got = waitpid(kid, &st);
+		const int got = waitpid(kid, &st, 0);
 		ok("waitpid returned the child", got == kid);
 		ok("the child exited cleanly", st == 0);
 		ok("the child's write did not reach the parent", coin == 7);
@@ -89,7 +89,7 @@ int main(int argc, char** argv) {
 			exit(30);
 		}
 		int st = 0;
-		waitpid(kid, &st);
+		waitpid(kid, &st, 0);
 		ok("a child can exec a program and it runs", st == 0);
 	}
 
@@ -108,7 +108,7 @@ int main(int argc, char** argv) {
 		if (kid == 0)
 			exit(3);
 		int st = 0;
-		waitpid(kid, &st);
+		waitpid(kid, &st, 0);
 		ok("an exit code comes back through wait", st == (3 << 8));
 	}
 
@@ -129,7 +129,7 @@ int main(int argc, char** argv) {
 			exit(0);
 		}
 		int st = 0;
-		waitpid(kid, &st);
+		waitpid(kid, &st, 0);
 	}
 	ok("a caught signal ran its handler", got_usr1 != 0);
 
@@ -187,7 +187,7 @@ int main(int argc, char** argv) {
 			exit(31);
 		}
 		int st = 0;
-		const int got = waitpid(kid, &st);
+		const int got = waitpid(kid, &st, 0);
 		ok("execve carries the environment to the new program", got == kid && st == 0);
 	}
 
@@ -201,7 +201,7 @@ int main(int argc, char** argv) {
 		sleep_ms(50);
 		kill(kid, kSigKill);
 		int st = 0;
-		const int got = waitpid(kid, &st);
+		const int got = waitpid(kid, &st, 0);
 		ok("an uncaught SIGKILL ends the process", got == kid);
 		ok("wait says it died of a signal", st == 128 + kSigKill);
 	}
@@ -238,11 +238,11 @@ int main(int argc, char** argv) {
 		ok("a pipe read what the child wrote", n == 15);
 		printf("proc: pipe said %s", buf);
 		close(fds[0]);
-		waitpid(kid, nullptr);
+		waitpid(kid, nullptr, 0);
 	}
 
 	// waiting for nothing
-	ok("waiting for a pid that is not ours fails", waitpid(9999, nullptr) < 0);
+	ok("waiting for a pid that is not ours fails", waitpid(9999, nullptr, 0) < 0);
 
 	printf("proc: %s, %d failure(s)\n", fails ? "FAILED" : "all passed", fails);
 	return fails ? 1 : 0;

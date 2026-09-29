@@ -45,15 +45,21 @@ enum {
 
 // terminal modes, for ioctl on /dev/tty
 enum {
-	kTtyCanon = 1, // deliver a line at a time rather than a keystroke at a time
-	kTtyEcho = 2,  // send what was typed back out
-	kTtySig = 4,   // ctrl c interrupts rather than arriving as a byte
+	kTtyCanon = 1,	  // deliver a line at a time rather than a keystroke at a time
+	kTtyEcho = 2,	  // send what was typed back out
+	kTtySig = 4,	  // ctrl c interrupts rather than arriving as a byte
+	kTtyNonblock = 8, // say there is nothing rather than making the reader wait
 };
 
 enum {
 	kIoctlGetFlags = 0x5401, // read the modes into the argument
 	kIoctlSetFlags = 0x5402, // take the modes from the argument
+	kIoctlGetOwner = 0x5403, // read the pid an interrupt is sent to
+	kIoctlSetOwner = 0x5404, // take that pid from the argument
 };
+
+// waitpid flags
+constexpr uint32_t kWNohang = 1; // report that nothing has finished instead of waiting
 
 // errno
 enum {
@@ -77,9 +83,10 @@ enum { kTypeFile = 1, kTypeDir = 2, kTypeChar = 3 };
 constexpr uint32_t O_RDONLY = 0u; // opening for reading is the absence of bits
 constexpr uint32_t O_WRONLY = 1u;
 constexpr uint32_t O_RDWR = 2u;
-constexpr uint32_t O_CREAT = 0100u;	  // 64
-constexpr uint32_t O_TRUNC = 01000u;  // 512
-constexpr uint32_t O_APPEND = 02000u; // 1024
+constexpr uint32_t O_CREAT = 0100u;		// 64
+constexpr uint32_t O_TRUNC = 01000u;	// 512
+constexpr uint32_t O_APPEND = 02000u;	// 1024
+constexpr uint32_t O_NONBLOCK = 04000u; // 2048, return rather than wait
 
 struct vfs_dirent {
 	char name[64];
@@ -131,23 +138,27 @@ struct sigaction {
 	uint32_t mask;
 };
 
+// the frame a handler runs on
 struct sigframe {
+	uint32_t ret;										   // where the handler returns to the trampoline
+	uint32_t arg0;										   // handler(sig, fp): sig
+	uint32_t arg1;										   // and the frame pointer
 	uint32_t edi, esi, ebp, esp_dummy, ebx, edx, ecx, eax; // the eight as pushed
 	uint32_t int_no, err_code;
 	uint32_t eip, cs, eflags;
 	uint32_t user_esp, user_ss;
 	uint32_t sig;	   // which signal this was
 	uint32_t fp;	   // address of this frame so a handler can read the above
-	uint32_t ret;	   // where the handler returns to the trampoline
-	uint32_t arg0;	   // handler(sig, fp): sig
-	uint32_t arg1;	   // and the frame pointer
 	uint32_t tramp[3]; // mov eax, SYS_sigreturn / int 0x80 / ud2
 };
 
 static_assert(offsetof(sigframe, arg0) == offsetof(sigframe, ret) + sizeof(uint32_t),
 			  "the two arguments follow the return address");
-static_assert(offsetof(sigframe, tramp) >= offsetof(sigframe, arg1) + sizeof(uint32_t),
-			  "the trampoline must not sit underneath the arguments");
+static_assert(offsetof(sigframe, ret) == 0, "the handler's stack starts on the return address");
+static_assert(offsetof(sigframe, edi) >= offsetof(sigframe, arg1) + sizeof(uint32_t),
+			  "the saved context belongs above the return address, not below it");
+static_assert(offsetof(sigframe, tramp) >= offsetof(sigframe, fp) + sizeof(uint32_t),
+			  "the trampoline must not sit underneath the frame pointer");
 static_assert(sizeof(sigframe) >= offsetof(sigframe, tramp) + 9,
 			  "the trampoline is nine bytes and has to fit in the frame");
 static_assert(sizeof(sigframe) == 92, "the frame is what the offsets above add up to");

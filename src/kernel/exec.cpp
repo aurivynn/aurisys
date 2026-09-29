@@ -119,7 +119,7 @@ constexpr int kCopyStr = 192;
 
 static char g_flat[8 + (kCopyArg + kCopyEnv) * kCopyStr];
 
-static bool copy_args(const char** av, int argc, const char** ev, int envc, char* out) {
+static bool copy_args(const char* const* av, int argc, const char* const* ev, int envc, char* out) {
 	char* p = out + 8;
 	for (int i = 0; i < argc; ++i) {
 		const size_t n = strlen(av[i]);
@@ -169,8 +169,8 @@ bool map_image(task::task* t) {
 } // namespace
 
 // read the elf, build the process, leave it runnable. returns its pid or 0
-static bool load_into(task::task* t, const char* path, int argc, const char** argv, int envc, const char** envp,
-					  Registers* out) {
+static bool load_into(task::task* t, const char* path, int argc, const char* const* argv, int envc,
+					  const char* const* envp, Registers* out) {
 	if (argc < 0 || argc > 16)
 		return false;
 	const int fd = vfs::fd_open(path, 0);
@@ -249,35 +249,40 @@ static bool load_into(task::task* t, const char* path, int argc, const char** ar
 	return true;
 }
 
-uint32_t spawn(const char* path, int argc, const char** argv) {
-	return spawn_mapped(path, argc, argv, nullptr, 0, 0, nullptr);
-}
+// turn the boot task into the first process, and start it
+bool init_first(const char* path, int argc, const char* const* argv, int envc, const char* const* envp) {
+	task::task* t = &task::g_tasks[0];
 
-uint32_t spawn_mapped(const char* path, int argc, const char** argv, const fdmap* map, int nmap, int envc,
-					  const char** envp) {
-	task::task* t = task::fork();
-	if (!t) {
-		terminal::printf("%s: no room for a process\n", path);
-		return 0;
+	paging::space* fresh = paging::space_create();
+	if (!fresh) {
+		terminal::printf("init: no room for an address space\n");
+		return false;
 	}
-	strncpy(t->name, path, sizeof t->name - 1);
-	t->name[sizeof t->name - 1] = 0;
+	t->sp = fresh;
+	t->owns_frames = false;
+
+	if (!task::give_frames(t)) {
+		terminal::printf("init: no room for a process image\n");
+		return false;
+	}
+	t->owns_frames = true;
 
 	Registers r = {};
 	if (!load_into(t, path, argc, argv, envc, envp, &r)) {
-		task::destroy(t);
-		return 0;
+		terminal::printf("init: %s could not be loaded\n", path);
+		return false;
 	}
 	t->regs = r;
+	t->in_syscall = false;
+	strncpy(t->name, path, sizeof t->name - 1);
+	t->name[sizeof t->name - 1] = 0;
 
-	for (int i = 0; i < nmap; ++i)
-		vfs::fd_install(t, map[i].child_fd, map[i].from);
-	// it has an image and an entry point now, so the scheduler may have it
+	// descriptors 0, 1 and 2 are the console, which the kernel set up and which the shell is about to open /dev/tty on
 	task::arm(t);
-	return t->pid;
+	return true;
 }
 
-bool replace(const char* path, int argc, const char** argv, int envc, const char** envp) {
+bool replace(const char* path, int argc, const char* const* argv, int envc, const char* const* envp) {
 	task::task* t = task::g_current;
 	if (!t || !t->sp)
 		return false;
@@ -340,39 +345,6 @@ bool replace(const char* path, int argc, const char** argv, int envc, const char
 	t->sig_active = 0;
 
 	task::resume_after_exec();
-}
-
-bool run(const char* path, int argc, const char** argv, uint32_t* exit_code) {
-	return run_mapped(path, argc, argv, nullptr, 0, exit_code);
-}
-
-bool run_mapped(const char* path, int argc, const char** argv, const fdmap* map, int nmap, uint32_t* exit_code) {
-	const int envc = terminal::env_count();
-	const char** envp = terminal::env_vector();
-	const uint32_t pid = spawn_mapped(path, argc, argv, map, nmap, envc, envp);
-	if (pid == 0)
-		return false;
-
-	task::set_foreground(task::find(pid));
-
-	task::task* t = nullptr;
-	for (;;) {
-		t = task::find(pid);
-		if (!t || t->state == task::kZombie)
-			break;
-		task::yield();
-	}
-
-	task::clear_foreground(t);
-
-	const uint32_t code = t ? t->exit_code : 0;
-	const uint32_t sig = t ? t->signal : 0;
-	task::reap();
-
-	task::take_signal(pid);
-	if (exit_code)
-		*exit_code = sig ? 128u + sig : code;
-	return true;
 }
 
 } // namespace exec

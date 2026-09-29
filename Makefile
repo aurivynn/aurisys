@@ -46,7 +46,7 @@ KERNEL_OBJS := $(BUILD)/entry.o $(BUILD)/font.o $(BUILD)/isr_stubs.o $(BUILD)/sy
                $(patsubst src/kernel/%.cpp,$(BUILD)/%.o,$(KERNEL_CPP))
 
 APPFLAGS := $(KFLAGS) -I src/apps
-APP_NAMES := cat df echo fault heap help hexdump ls mem mkdir panic proc ps rm showenv spin ttytest uptime write
+APP_NAMES := cat df echo fault heap help hexdump ls mem mkdir panic proc ps rm sh showenv spin ttytest uptime write
 APP_SRCS := $(addprefix src/apps/,$(addsuffix .cpp,$(APP_NAMES)))
 APP_OBJS := $(addprefix $(BUILD)/app/,$(addsuffix .o,$(APP_NAMES)))
 APP_RT_OBJS := $(BUILD)/app/rt/crt0.o $(BUILD)/app/rt/lib.o $(BUILD)/app/rt/print.o \

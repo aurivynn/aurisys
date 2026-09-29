@@ -174,15 +174,12 @@ int dev_zero_rd(void*, void* buf, uint32_t len) {
 }
 int dev_zero_wr(void*, const void*, uint32_t len) { return (int)len; }
 
+int tty_take(void* buf, uint32_t len);
+
 int dev_console_rd(void*, void* buf, uint32_t len) {
 	if (len == 0)
 		return 0;
-
-	int c = task::console_key();
-	if (c < 0)
-		return 0; // nothing waiting, or it was an interrupt, so no byte
-	((uint8_t*)buf)[0] = (uint8_t)c;
-	return 1;
+	return tty_take(buf, len);
 }
 int dev_console_wr(void*, const void* buf, uint32_t len) {
 	const char* s = (const char*)buf;
@@ -236,7 +233,16 @@ struct tty {
 	uint32_t head; // where the next byte goes
 	uint32_t tail; // where the next byte is taken from
 	uint32_t flags;
+
+	// the process an interrupt is sent to
+	uint32_t owner;
+
+	// set when the discipline has seen an end of file and nobody has taken it yet
+	bool eof;
 };
+
+// set by ioctl when a reader would rather be told there is nothing than be made to wait for it.
+bool g_tty_nonblock;
 
 tty g_tty;
 
@@ -273,76 +279,104 @@ int tty_key(bool block) {
 	return -1;
 }
 
-// deliver a whole line assembled here out of the keystrokes that make it up
-int dev_tty_rd(void*, void* buf, uint32_t len) {
-	if (len == 0)
-		return 0;
-	uint8_t* out = (uint8_t*)buf;
-	uint32_t got = 0;
+void tty_input(int c) {
 	const bool canon = (g_tty.flags & kTtyCanon) != 0;
 	const bool echo = (g_tty.flags & kTtyEcho) != 0;
 	const bool sigs = (g_tty.flags & kTtySig) != 0;
 
-	for (;;) {
-		if (tty_buffered()) {
-			out[got++] = g_tty.buf[g_tty.tail];
-			g_tty.tail = (g_tty.tail + 1u) % kTtyBuf;
-			if (got >= len || !canon)
-				break;
-			continue;
+	if (c == 0x03 && sigs) {
+		tty_drop();
+		if (echo)
+			tty_echo("^C\r\n", 4);
+		const uint32_t to = g_tty.owner ? g_tty.owner : (task::g_current ? task::g_current->pid : 0u);
+		if (to)
+			task::signal_task(to, task::kSigInt);
+		return;
+	}
+
+	if (c == 0x04 && canon) {
+		if (!tty_buffered()) {
+			g_tty.eof = true;
+			return;
 		}
-
-		int c = tty_key(true);
-		if (c < 0)
-			continue;
-
-		if (c == 0x03 && sigs) {
-			tty_drop();
-			if (echo) {
-				tty_echo("^C\r\n", 4);
-			}
-			task::task* self = task::g_current;
-			if (self)
-				task::kill(self->pid, task::kSigInt);
-
-			return 0;
-		}
-
-		if (c == 0x04 && canon) {
-			if (!tty_buffered())
-				break;
-			tty_put((char)c);
-			if (echo)
-				tty_echo((char)c);
-			continue;
-		}
-
-		if (c == 0x7F && canon) {
-			if (g_tty.head != g_tty.tail) {
-				g_tty.head = (g_tty.head - 1u + kTtyBuf) % kTtyBuf;
-				if (echo)
-					tty_echo("\b \b", 3);
-			}
-			continue;
-		}
-
-		if (c == '\r' && canon)
-			c = '\n';
-
 		tty_put((char)c);
-		if (echo) {
-			if (c == '\n')
-				tty_echo("\r\n", 2);
-			else if (c == '\t')
-				tty_echo("\t", 1);
-			else if (c < 0x20) {
-				char bell = 7;
-				tty_echo(bell);
-			} else
-				tty_echo((char)c);
+		if (echo)
+			tty_echo((char)c);
+		return;
+	}
+
+	if (c == 0x7F && canon) {
+		if (g_tty.head != g_tty.tail) {
+			g_tty.head = (g_tty.head - 1u + kTtyBuf) % kTtyBuf;
+			if (echo)
+				tty_echo("\b \b", 3);
 		}
+		return;
+	}
+
+	if (c == '\r' && canon)
+		c = '\n';
+
+	tty_put((char)c);
+	if (echo) {
+		if (c == '\n')
+			tty_echo("\r\n", 2);
+		else if (c == '\t')
+			tty_echo("\t", 1);
+		else if (c < 0x20)
+			tty_echo((char)7);
+		else
+			tty_echo((char)c);
+	}
+}
+
+int tty_take(void* buf, uint32_t len) {
+	uint8_t* out = (uint8_t*)buf;
+	uint32_t got = 0;
+
+	while (got < len && !g_tty.eof && tty_buffered()) {
+		out[got++] = (uint8_t)g_tty.buf[g_tty.tail];
+		g_tty.tail = (g_tty.tail + 1u) % kTtyBuf;
 	}
 	return (int)got;
+}
+
+// deliver a whole line assembled here out of the keystrokes that make it up
+int dev_tty_rd(void*, void* buf, uint32_t len) {
+	if (len == 0)
+		return 0;
+	const bool canon = (g_tty.flags & kTtyCanon) != 0;
+	uint8_t* out = (uint8_t*)buf;
+	uint32_t got = 0;
+
+	for (;;) {
+		got += (uint32_t)tty_take(out + got, len - got);
+
+		if (got) {
+			if (!canon)
+				return (int)got;
+			// canonical mode hands over a line at a time
+			for (uint32_t i = 0; i < got; ++i) {
+				if (out[i] == '\n')
+					return (int)i + 1;
+			}
+			if (got >= len)
+				return (int)got;
+		}
+
+		if (g_tty.eof) {
+			g_tty.eof = false;
+			return (int)got;
+		}
+
+		if (g_tty_nonblock)
+			return (int)got;
+
+		tty_drain();
+		if (tty_buffered() || g_tty.eof)
+			continue;
+		tty_key(true); // park until a keystroke arrives
+	}
 }
 
 int dev_tty_wr(void*, const void* buf, uint32_t len) {
@@ -355,11 +389,18 @@ int dev_tty_ctl(void*, uint32_t req, void* arg) {
 		return -kErrInval;
 	switch (req) {
 	case kIoctlGetFlags:
-		*(uint32_t*)arg = g_tty.flags;
+		*(uint32_t*)arg = g_tty.flags | (g_tty_nonblock ? (uint32_t)kTtyNonblock : 0u);
 		return 0;
 	case kIoctlSetFlags:
-		g_tty.flags = *(uint32_t*)arg;
+		g_tty_nonblock = (*(uint32_t*)arg & kTtyNonblock) != 0;
+		g_tty.flags = *(uint32_t*)arg & ~(uint32_t)kTtyNonblock;
 		tty_drop(); // a line half typed under the old modes is not a line now
+		return 0;
+	case kIoctlGetOwner:
+		*(uint32_t*)arg = g_tty.owner;
+		return 0;
+	case kIoctlSetOwner:
+		g_tty.owner = *(uint32_t*)arg;
 		return 0;
 	default:
 		return -kErrInval;
@@ -436,6 +477,20 @@ node* dev_find_child(node* n, const char* name) {
 }
 
 } // namespace
+
+// take everything waiting at the keyboard or on the line and let the discipline have it
+void tty_drain() {
+	bool got = false;
+	for (;;) {
+		const int c = tty_key(false);
+		if (c < 0)
+			break;
+		tty_input(c);
+		got = true;
+	}
+	if (got)
+		kbd::wake();
+}
 
 // walk a path a component at a time. fs already resolves relative to
 // cwd and folds .. so only plain names reach the find_child calls
@@ -923,12 +978,7 @@ node* fd_node(int fd) {
 }
 
 // PATH
-const char* path() {
-	const char* p = terminal::getenv_from_shell("PATH");
-	return (p && *p) ? p : "/bin";
-}
-
-bool set_path_from_shell(const char* value) { return terminal::set_env_in_shell("PATH", value); }
+const char* path() { return "/bin"; }
 
 // first PATH entry that holds the name wins
 bool find_in_path(const char* name, char* out, uint32_t outsz) {

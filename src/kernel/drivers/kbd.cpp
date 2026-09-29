@@ -106,15 +106,8 @@ void wait() {
 			g_wait[i] = t;
 			break;
 		}
-
 	if (g_head == g_tail)
-		t->state = task::kBlocked;
-
-	if (g_head != g_tail && t->state == task::kBlocked)
-		t->state = task::kReady;
-
-	if (t->state == task::kBlocked)
-		task::yield();
+		task::block();
 	for (int i = 0; i < kWaitMax; ++i)
 		if (g_wait[i] == t)
 			g_wait[i] = nullptr;

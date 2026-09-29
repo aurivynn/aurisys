@@ -18,6 +18,7 @@
 #include "lib/time.h"
 #include "fs.h"
 #include "proc.h"
+#include "exec.h"
 #include "shell/terminal.h"
 #include "task.h"
 #include "vfs.h"
@@ -440,8 +441,15 @@ extern "C" void kernel_main(bootinfo* bi) {
 	serial::puts("\r\nAURISYS: all tests passed\r\n");
 	serial::puts("\r\nAURISYS: terminal ready\r\n");
 
-	terminal::run(); // never returns
+	static const char* const sh_argv[] = {"sh", nullptr};
+	static const char* const sh_envp[] = {"PATH=/bin", "HOME=/", "TERM=vt100", nullptr};
+	if (!exec::init_first("/bin/sh", 1, sh_argv, 3, sh_envp)) {
+		both("\n  AURISYS: no shell. nothing can run on this.\n");
+		serial::puts("\r\nAURISYS: no shell. nothing can run on this.\r\n");
+		for (;;)
+			asm volatile("cli; hlt");
+	}
 
-	for (;;)
-		asm volatile("hlt"); // done
+	// hand the machine over
+	task::become_first();
 }
