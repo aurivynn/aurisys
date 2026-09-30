@@ -11,22 +11,31 @@ inline void outb(uint16_t port, uint8_t val) { asm volatile("outb %0, %1" : : "a
 
 const uint16_t kReload = 1193;
 
-volatile uint64_t g_ms = 0;
+volatile uint64_t g_ticks = 0;
 
-void tick(Registers*) { ++g_ms; }
+void tick(Registers*) { ++g_ticks; }
 } // namespace
+
+constexpr uint32_t kPitHz = 1193182u;
+constexpr uint32_t kTickThousandths = (uint32_t)(((uint64_t)kReload * 1000000u + kPitHz / 2u) / kPitHz);
 
 namespace time {
 
-uint32_t ms() { return (uint32_t)g_ms; }
+// ticks to milliseconds
+uint32_t ms() {
+	const uint32_t lo = (uint32_t)g_ticks;
+	const uint32_t hi = (uint32_t)(g_ticks >> 32);
+	const uint32_t whole = kTickThousandths / 1000u;
+	const uint32_t part = kTickThousandths % 1000u;
+	return lo * whole + (lo * part) / 1000u + (hi * part) / 1000u;
+}
 
 } // namespace time
 
-constexpr uint32_t kPitHz = 1193182u;
-
 uint32_t ticks_for_ms(uint32_t ms) {
-	const uint32_t num = ms * kPitHz + kReload * 500u;
-	return num / (kReload * 1000u);
+	const uint32_t whole = ms / kTickThousandths;
+	const uint32_t part = ms % kTickThousandths;
+	return whole * 1000u + (part * 1000u + kTickThousandths / 2u) / kTickThousandths;
 }
 
 void timer_init() {

@@ -40,10 +40,13 @@ int g_cur_x = -1; // the cell currently drawn as a cursor block
 int g_cur_y = -1;
 bool g_cursor_on = true;
 
-constexpr int kMaxCols = 256;
-constexpr int kMaxRows = 64;
+constexpr int kMaxCols = 200;
+constexpr int kMaxRows = 72;
 char g_ch[kMaxRows][kMaxCols];
 uint32_t g_fgc[kMaxRows][kMaxCols];
+
+// how much of the screen has ever been written to
+int g_used = 1;
 
 int cols() {
 	const int n = (int)(fb::width() / 8);
@@ -76,7 +79,7 @@ int clampy(int y) {
 void paint(int x, int y) {
 	fb::drawchar(x * 8, y * 16, g_ch[y][x], g_fgc[y][x], g_bg);
 	if (g_cursor_on && x == g_cx && y == g_cy)
-		fb::fill_rect(x * 8, y * 16 + 13, 8, 3, g_fgc[y][x]);
+		fb::fill_rect(x * 8, y * 16 + 13, 8, 3, g_fg);
 }
 
 void blank_row(int y) {
@@ -86,8 +89,12 @@ void blank_row(int y) {
 	}
 }
 
+// blank the part of the screen that has been used and no more
 void blank_all() {
-	for (int y = 0; y < rows(); ++y)
+	int n = g_used;
+	if (n > rows())
+		n = rows();
+	for (int y = 0; y < n; ++y)
 		blank_row(y);
 }
 
@@ -105,7 +112,10 @@ void repaint_cursor() {
 }
 
 void repaint_all() {
-	for (int y = 0; y < rows(); ++y)
+	int n = g_used;
+	if (n > rows())
+		n = rows();
+	for (int y = 0; y < n; ++y)
 		for (int x = 0; x < cols(); ++x)
 			paint(x, y);
 }
@@ -160,6 +170,7 @@ void erase_line(int how) {
 void erase_display(int how) {
 	if (how == 2 || how == 3) {
 		blank_all();
+		g_used = 1;
 		fb::clear(g_bg);
 		g_cx = 0;
 		g_cy = 0;
@@ -372,6 +383,11 @@ void escape(char c) {
 void init() {
 	g_fg = kDefaultFg;
 	g_bg = kDefaultBg;
+
+	if ((int)(fb::width() / 8) > kMaxCols || (int)(fb::height() / 16) > kMaxRows)
+		printf("console: %ux%u cells needed, only %ux%u remembered\n", fb::width() / 8, fb::height() / 16, kMaxCols,
+			   kMaxRows);
+
 	g_cx = 0;
 	g_cy = 0;
 	g_cur_x = -1;
@@ -398,6 +414,7 @@ bool cursor_is_visible() { return g_cursor_on; }
 
 void clear() {
 	blank_all();
+	g_used = 1;
 	fb::clear(g_bg);
 	g_cx = 0;
 	g_cy = 0;
@@ -435,6 +452,8 @@ void putchar(char c) {
 
 	g_ch[g_cy][g_cx] = c;
 	g_fgc[g_cy][g_cx] = g_fg;
+	if (g_cy + 1 > g_used)
+		g_used = g_cy + 1;
 	paint(g_cx, g_cy);
 
 	++g_cx;

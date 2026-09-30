@@ -1264,9 +1264,13 @@ static bool builtin_exit(int argc, char** argv) {
 		for (const char* p = argv[1]; *p >= '0' && *p <= '9'; ++p)
 			code = code * 10 + (*p - '0');
 
-	sh_printf("\nsh: nothing will restart the shell. giving up.\n");
+	if (getpid() == 1) {
+		sh_printf("sh: pid 1 is the only process here. there is nothing to hand over to.\n");
+		return true;
+	}
+
 	exit(code);
-	return 0; // not reached
+	return true;
 }
 
 static bool run_builtin(stage& s) {
