@@ -206,14 +206,12 @@ int g_state = kPlain;
 constexpr int kMaxParam = 8;
 int g_param[kMaxParam];
 int g_nparam;
-int g_pend;		 // a number being accumulated
-bool g_pend_set; // whether a number has been accumulated at all
-bool g_priv;	 // a private marker such as ? was seen
+int g_pend;	 // a number being accumulated
+bool g_priv; // a private marker such as ? was seen
 
 void csi_start() {
 	g_nparam = 0;
 	g_pend = 0;
-	g_pend_set = false;
 	g_priv = false;
 }
 
@@ -223,7 +221,6 @@ void csi_push() {
 	++g_nparam;
 
 	g_pend = 0;
-	g_pend_set = false;
 }
 
 void sgr() {
@@ -353,7 +350,6 @@ void escape(char c) {
 	case kInCsi:
 		if (c >= '0' && c <= '9') {
 			g_pend = g_pend * 10 + (c - '0');
-			g_pend_set = true;
 		} else if (c == ';') {
 			csi_push();
 		} else if (c == '?') {

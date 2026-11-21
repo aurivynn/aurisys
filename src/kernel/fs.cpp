@@ -28,7 +28,6 @@ uint32_t g_ipg;				  // s_inodes_per_group
 uint32_t g_inode_size;		  // s_inode_size (256 here)
 uint32_t g_ipb;				  // inodes per block
 uint32_t g_desc_block;		  // block of the group descriptor table
-uint32_t g_desc_count;		  // groups on this fs
 uint32_t g_bbb, g_ibb, g_itb; // group 0
 uint32_t g_free_blocks, g_free_inodes;
 uint32_t g_feat_compat, g_feat_incompat, g_feat_ro;
@@ -38,6 +37,22 @@ uint8_t g_b1[kMaxBlockSize]; // general block scratch
 uint8_t g_b2[kMaxBlockSize]; // dirent block scratch
 uint8_t g_ino[512];			 // the current inode image
 char g_name[256];			 // transient name handed to the dirent callback
+
+// block cache
+constexpr int kCacheSlots = 64;
+constexpr int kCacheBuckets = 64;
+
+struct cache_slot {
+	uint32_t blk;
+	int next; // next slot in the same bucket, -1 ends the chain
+	bool valid;
+	bool used; // clock reference bit
+	uint8_t data[kMaxBlockSize];
+};
+
+cache_slot g_cache[kCacheSlots];
+int g_bucket[kCacheBuckets];
+int g_hand = 0;
 
 inline uint16_t r16(const uint8_t* p) { return (uint16_t)(p[0] | (uint16_t)p[1] << 8); }
 inline uint32_t r32(const uint8_t* p) {
@@ -54,16 +69,113 @@ inline void w32(uint8_t* p, uint32_t v) {
 	p[3] = (uint8_t)(v >> 24);
 }
 
+int cache_hash(uint32_t blk) { return (int)((blk * 2654435761u) % kCacheBuckets); }
+
+cache_slot* cache_find(uint32_t blk) {
+	for (int i = g_bucket[cache_hash(blk)]; i >= 0; i = g_cache[i].next)
+		if (g_cache[i].valid && g_cache[i].blk == blk)
+			return &g_cache[i];
+	return nullptr;
+}
+
+void cache_unlink(int i) {
+	int* p = &g_bucket[cache_hash(g_cache[i].blk)];
+	while (*p >= 0) {
+		if (*p == i) {
+			*p = g_cache[i].next;
+			return;
+		}
+		p = &g_cache[*p].next;
+	}
+}
+
+// the next slot to reuse
+int cache_victim() {
+	for (;;) {
+		cache_slot& s = g_cache[g_hand];
+		const int i = g_hand;
+		g_hand = (g_hand + 1) % kCacheSlots;
+		if (!s.valid)
+			return i;
+		if (s.used) {
+			s.used = false;
+			continue;
+		}
+		return i;
+	}
+}
+
+void cache_install(int i, uint32_t blk, const void* data) {
+	cache_slot& s = g_cache[i];
+	if (s.valid)
+		cache_unlink(i);
+	s.valid = true;
+	s.blk = blk;
+	s.used = true;
+	if (data != s.data)
+		memcpy(s.data, data, g_bs);
+	const int b = cache_hash(blk);
+	s.next = g_bucket[b];
+	g_bucket[b] = i;
+}
+
+void cache_drop(uint32_t blk) {
+	cache_slot* s = cache_find(blk);
+	if (!s)
+		return;
+	cache_unlink((int)(s - g_cache));
+	s->valid = false;
+}
+
+void cache_reset() {
+	for (int i = 0; i < kCacheBuckets; ++i)
+		g_bucket[i] = -1;
+	for (int i = 0; i < kCacheSlots; ++i) {
+		g_cache[i].valid = false;
+		g_cache[i].used = false;
+		g_cache[i].next = -1;
+	}
+	g_hand = 0;
+}
+
 bool read_block(uint32_t blk, void* buf) {
 	if (blk >= g_blocks)
 		return false;
-	return ata::read_sectors(g_part_lba + blk * (g_bs >> 9), g_bs >> 9, buf);
+	cache_slot* s = cache_find(blk);
+	if (s) {
+		s->used = true;
+		memcpy(buf, s->data, g_bs);
+		return true;
+	}
+
+	const int i = cache_victim();
+	cache_slot& v = g_cache[i];
+	if (v.valid)
+		cache_unlink(i);
+	v.valid = false;
+	if (!ata::read_sectors(g_part_lba + blk * (g_bs >> 9), g_bs >> 9, v.data))
+		return false;
+	cache_install(i, blk, v.data);
+	memcpy(buf, v.data, g_bs);
+	return true;
 }
 
 bool write_block(uint32_t blk, const void* buf) {
 	if (blk >= g_blocks)
 		return false;
-	return ata::write_sectors(g_part_lba + blk * (g_bs >> 9), g_bs >> 9, buf);
+	if (!ata::write_sectors(g_part_lba + blk * (g_bs >> 9), g_bs >> 9, buf)) {
+		// a partial write leaves the slot untrustworthy
+		cache_drop(blk);
+		return false;
+	}
+	cache_slot* s = cache_find(blk);
+	if (s) {
+		s->used = true;
+		memcpy(s->data, buf, g_bs);
+	} else {
+		cache_install(cache_victim(), blk, buf);
+	}
+	return true;
 }
 
 bool load_inode(uint32_t ino) {
@@ -302,7 +414,9 @@ bool commit_counts(int used_blocks, int used_inodes, int used_dirs) {
 	g_free_inodes = (uint32_t)((int)g_free_inodes - used_inodes);
 	w32(g_sb + 0x0C, g_free_blocks);
 	w32(g_sb + 0x10, g_free_inodes);
-	return ata::write_sectors(g_part_lba + 2, 2, g_sb);
+	const bool ok = ata::write_sectors(g_part_lba + 2, 2, g_sb);
+	cache_drop(1024 / g_bs);
+	return ok;
 }
 
 // push the inode image in g_ino
@@ -317,6 +431,7 @@ bool store_inode(uint32_t ino) {
 } // namespace
 
 bool mount(uint32_t disk_lba) {
+	cache_reset();
 	uint8_t mbr[512];
 	if (!ata::read_sector(disk_lba, mbr) || r16(mbr + 510) != 0xAA55)
 		return false;
@@ -354,7 +469,6 @@ bool mount(uint32_t disk_lba) {
 		return false;
 
 	g_desc_block = g_first_data + 1;
-	g_desc_count = (g_blocks + g_bpg - 1) / g_bpg;
 	uint32_t stride = r16(g_sb + 0xFE);
 	if (stride < 32)
 		stride = 32;
@@ -806,8 +920,6 @@ bool write_at(uint32_t ino, const void* buf, uint32_t off, uint32_t len) {
 		if (!map_lblock(lblock, &phys)) {
 			if (at < old_size)
 				return false;
-			if (r16(g_ino + 0x2A) >= 4)
-				return false;
 
 			const uint32_t start = lblock * g_bs;
 			const uint32_t need = (off + len - start + g_bs - 1) / g_bs;
@@ -816,12 +928,33 @@ bool write_at(uint32_t ino, const void* buf, uint32_t off, uint32_t len) {
 			uint32_t first;
 			if (!alloc_blocks(need, &first))
 				return false;
+
 			const uint16_t e = r16(g_ino + 0x2A);
-			const uint32_t ee = 0x34 + (uint32_t)e * 12;
-			w32(g_ino + ee, lblock);
-			w16(g_ino + ee + 4, (uint16_t)need);
-			w32(g_ino + ee + 8, first);
-			w16(g_ino + 0x2A, (uint16_t)(e + 1));
+			int merge = -1;
+			for (uint16_t i = 0; i < e; ++i) {
+				uint8_t* ent = g_ino + 0x34 + (uint32_t)i * 12;
+				const uint32_t el = r32(ent);
+				const uint16_t elen = (uint16_t)(r16(ent + 4) & 0x7FFF);
+				const uint32_t ep = (uint32_t)r16(ent + 6) << 16 | r32(ent + 8);
+				if (lblock == el + elen && first == ep + elen && (uint32_t)elen + need <= 32767) {
+					merge = i;
+					break;
+				}
+			}
+			if (merge >= 0) {
+				uint8_t* ent = g_ino + 0x34 + (uint32_t)merge * 12;
+				w16(ent + 4, (uint16_t)((r16(ent + 4) & 0x7FFF) + need));
+			} else {
+				if (e >= 4) {
+					free_blocks(first, need);
+					return false; // no extent tree to put more in
+				}
+				const uint32_t ee = 0x34 + (uint32_t)e * 12;
+				w32(g_ino + ee, lblock);
+				w16(g_ino + ee + 4, (uint16_t)need);
+				w32(g_ino + ee + 8, first);
+				w16(g_ino + 0x2A, (uint16_t)(e + 1));
+			}
 			w32(g_ino + 0x1C, r32(g_ino + 0x1C) + need * (g_bs >> 9));
 			alloc_total += need;
 			// the loop comes round again and map_lblock finds it now

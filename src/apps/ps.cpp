@@ -81,11 +81,12 @@ int main(int argc, char** argv) {
 		for (int q = 0; ktime[q] >= '0' && ktime[q] <= '9'; ++q)
 			kk = kk * 10u + (unsigned)(ktime[q] - '0');
 		char total[16];
-		unsigned t = 0, w = 0;
+		unsigned v = u + kk;
+		unsigned w = 0;
 		do {
-			total[w++] = (char)('0' + (u + kk) % 10u);
-			t = (u + kk) / 10u;
-		} while (t);
+			total[w++] = (char)('0' + v % 10u);
+			v /= 10u;
+		} while (v);
 		total[w] = 0;
 
 		for (int a = 0, b = (int)w - 1; a < b; ++a, --b) {

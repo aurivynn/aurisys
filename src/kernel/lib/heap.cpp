@@ -39,7 +39,6 @@ size_t g_allocs = 0;
 size_t g_frees = 0;
 size_t g_coalesced = 0;
 size_t g_frames = 0;
-size_t g_rejected = 0; // frees we refused, should stay 0
 
 inline uint32_t align_up(uint32_t v, uint32_t a) { return (v + a - 1u) & ~(a - 1u); }
 inline uint32_t align_down(uint32_t v, uint32_t a) { return v & ~(a - 1u); }
@@ -167,10 +166,8 @@ void kfree(void* ptr) {
 	if (!ptr)
 		return;
 	block* b = (block*)((uint8_t*)ptr - sizeof(block));
-	if (!ours(b) || !in_use(b)) {
-		++g_rejected;
+	if (!ours(b) || !in_use(b))
 		return;
-	}
 	mark(b, false);
 	++g_frees;
 
