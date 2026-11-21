@@ -42,6 +42,7 @@ enum {
 	SYS_ioctl,
 	SYS_chdir,
 	SYS_time,
+	SYS_poll,
 };
 
 // terminal modes, for ioctl on /dev/tty
@@ -110,6 +111,21 @@ struct file_stat {
 	uint32_t atime;
 	uint32_t mtime;
 	uint32_t ctime;
+};
+
+// poll events
+enum {
+	kPollIn = 0x0001,  // a read would not wait
+	kPollOut = 0x0004, // a write would not wait
+	kPollErr = 0x0008, // the descriptor is broken
+	kPollHup = 0x0010, // the other end has gone
+	kPollNval = 0x0020 // the descriptor is not open
+};
+
+struct pollfd {
+	int fd;
+	uint16_t events;
+	uint16_t revents;
 };
 
 struct fs_stat {

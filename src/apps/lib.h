@@ -17,6 +17,7 @@ uint32_t sys_call(uint32_t num, uint32_t a = 0, uint32_t b = 0, uint32_t c = 0, 
 int open(const char* path, uint32_t flags);
 int read(int fd, void* buf, uint32_t len);
 int write(int fd, const void* buf, uint32_t len);
+int poll(pollfd* fds, uint32_t nfds, int timeout_ms);
 int close(int fd);
 int lseek(int fd, int off, int whence);
 int readdir(int fd, uint32_t index, vfs_dirent* out);

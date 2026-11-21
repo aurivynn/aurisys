@@ -20,6 +20,9 @@ int read(int fd, void* buf, uint32_t len) {
 int write(int fd, const void* buf, uint32_t len) {
 	return (int)sys_call(SYS_write, (uint32_t)fd, (uint32_t)(uintptr_t)buf, len, 0, 0);
 }
+int poll(pollfd* fds, uint32_t nfds, int timeout_ms) {
+	return (int)sys_call(SYS_poll, (uint32_t)(uintptr_t)fds, nfds, (uint32_t)timeout_ms, 0, 0);
+}
 int close(int fd) { return (int)sys_call(SYS_close, (uint32_t)fd, 0, 0, 0, 0); }
 int lseek(int fd, int off, int whence) {
 	return (int)sys_call(SYS_lseek, (uint32_t)fd, (uint32_t)off, (uint32_t)whence, 0, 0);

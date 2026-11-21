@@ -149,6 +149,8 @@ static int dispatch(regs* r) {
 		return 0;
 	case SYS_time:
 		return (int)time::unix();
+	case SYS_poll:
+		return vfs::poll((pollfd*)r->ebx, r->ecx, (int)r->edx);
 	case SYS_panic:
 		panic("app requested a panic");
 
@@ -252,7 +254,11 @@ extern "C" uint32_t syscall_dispatch(regs* r) {
 	task::task* self = task::g_current;
 	if (self)
 		self->in_syscall = true;
-	const uint32_t out = (uint32_t)dispatch(r);
+	const uint32_t call = r->eax;
+	uint32_t out = (uint32_t)dispatch(r);
+	if (call == SYS_sigreturn)
+		out = r->eax;
+	r->eax = out;
 	task::deliver_pending(self, (Registers*)r);
 	if (self)
 		self->in_syscall = false;

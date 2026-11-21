@@ -88,7 +88,10 @@ void wake() {
 		if (t)
 			task::unblock(t);
 	}
+	task::wake_pollers();
 }
+
+bool pending() { return g_head != g_tail; }
 
 void wait() {
 	task::task* t = task::g_current;

@@ -16,6 +16,7 @@ typedef int (*write_fn)(node* n, const void* buf, uint32_t off, uint32_t len);
 typedef int (*readdir_fn)(node* n, uint32_t index, node* out);
 typedef node* (*find_fn)(node* n, const char* name);
 typedef int (*ctl_fn)(node* n, uint32_t req, void* arg);
+typedef uint16_t (*poll_fn)(node* n, uint32_t flags, uint16_t events);
 
 constexpr uint8_t kTypeFile = 1;
 constexpr uint8_t kTypeDir = 2;
@@ -42,7 +43,8 @@ struct node {
 	write_fn write;
 	readdir_fn readdir;
 	find_fn find_child;
-	ctl_fn ctl; // null on anything that has nothing to control
+	ctl_fn ctl;	  // null on anything that has nothing to control
+	poll_fn poll; // null on nodes that are always ready as plain files
 
 	char name_buf[64]; // the name lives in here
 };
@@ -71,8 +73,9 @@ int fd_read(int fd, void* buf, uint32_t len);
 int fd_write(int fd, const void* buf, uint32_t len);
 int lseek(int fd, int off, int whence); // 0 set, 1 cur, 2 end, new offset out
 int ioctl(int fd, uint32_t req, void* arg);
-int dup2(int old, int nw); // point nw at old, closing nw first
-int next_free();		   // the lowest unused descriptor or -1
+int poll(pollfd* fds, uint32_t nfds, int timeout_ms); // -1 waits forever, 0 returns at once
+int dup2(int old, int nw);							  // point nw at old, closing nw first
+int next_free();									  // the lowest unused descriptor or -1
 int fd_install(task::task* into, int child_fd, int from);
 
 void tty_drain();

@@ -16,8 +16,9 @@ enum Key : int {
 	KEY_INS,
 };
 
-void init(); // installs the irq1 handler + unmask
-int poll();	 // next key: ascii, a Key, or -1 if nothing queued
+void init();	// installs the irq1 handler + unmask
+int poll();		// next key: ascii, a Key, or -1 if nothing queued
+bool pending(); // true while a scancode is queued
 
 void wait();
 void wake(); // a key arrived, or one is about to

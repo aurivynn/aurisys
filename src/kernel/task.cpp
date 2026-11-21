@@ -376,7 +376,7 @@ void on_tick() {
 	++g_ticks;
 	for (int i = 0; i < kMaxTask; ++i) {
 		task* s = &g_tasks[i];
-		if (s->state == kBlocked && s->sleep_until && g_ticks >= s->sleep_until) {
+		if (s->state == kBlocked && s->sleep_until && (int32_t)(g_ticks - s->sleep_until) >= 0) {
 			s->sleep_until = 0;
 			unblock(s);
 		}
@@ -392,6 +392,30 @@ void on_tick() {
 
 	if (serial::pending())
 		kbd::wake();
+}
+
+int poll_wait(uint32_t until) {
+	task* t = g_current;
+	if (!t)
+		return -kErrInval;
+	if (t->sig_pending)
+		return -kErrIntr;
+
+	t->polling = true;
+	t->sleep_until = until;
+	block();
+	t->polling = false;
+	t->sleep_until = 0;
+
+	if (t->sig_pending)
+		return -kErrIntr;
+	return 0;
+}
+
+void wake_pollers() {
+	for (int i = 0; i < kMaxTask; ++i)
+		if (g_tasks[i].polling)
+			unblock(&g_tasks[i]);
 }
 
 // sleep for a number of ticks

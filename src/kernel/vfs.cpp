@@ -6,6 +6,7 @@
 #include "drivers/console.h"
 #include "drivers/kbd.h"
 #include "drivers/serial.h"
+#include "drivers/timer.h"
 #include "fs.h"
 #include "lib/mem.h"
 #include "lib/str.h"
@@ -29,7 +30,8 @@ static node* pool_fresh() {
 	return &g_pool[s];
 }
 
-// mounts keyed by inode, not by node pointer: the pool recycles slots so a mount held on a single node would go stale.
+// mounts keyed by inode, not by node pointer
+// the pool recycles slots so a mount held on a single node would go stale
 // resolve reattaches the tree when a path walks through the matching inode
 struct mnt {
 	uint32_t ino;
@@ -44,6 +46,8 @@ static node g_devfs; // the dev tree root
 // ext4 backend adapter
 
 static int ext_read(node* n, void* buf, uint32_t off, uint32_t len) { return (int)fs::read(n->inode, buf, len, off); }
+
+static uint16_t ext_poll(node*, uint32_t, uint16_t events) { return (uint16_t)(events & (kPollIn | kPollOut)); }
 
 // writing through a descriptor
 static int ext_write(node* n, const void* buf, uint32_t off, uint32_t len) {
@@ -103,6 +107,7 @@ static int ext_readdir(node* n, uint32_t index, node* out) {
 	out->write = ext_write;
 	out->readdir = ext_readdir;
 	out->find_child = ext_find_child;
+	out->poll = ext_poll;
 	fs::stat st;
 	if (fs::getstat(c.ino, &st)) {
 		out->size = st.size;
@@ -147,6 +152,7 @@ static node* ext_find_child(node* n, const char* name) {
 	out->write = ext_write;
 	out->readdir = ext_readdir;
 	out->find_child = ext_find_child;
+	out->poll = ext_poll;
 	fs::stat st;
 	if (fs::getstat(c.ino, &st)) {
 		out->size = st.size;
@@ -164,12 +170,14 @@ static node* ext_find_child(node* n, const char* name) {
 typedef int (*dev_rd)(void* in, void* buf, uint32_t len);
 typedef int (*dev_wr)(void* in, const void* buf, uint32_t len);
 typedef int (*dev_ioctl_fn)(void* in, uint32_t req, void* arg);
+typedef uint16_t (*dev_poll_fn)(uint16_t events);
 
 struct dev {
 	const char* name;
 	dev_rd rd;
 	dev_wr wr;
 	dev_ioctl_fn ctl;
+	dev_poll_fn poll;
 };
 
 static int dev_null_rd(void*, void*, uint32_t len) {
@@ -417,14 +425,54 @@ static int dev_tty_ctl(void*, uint32_t req, void* arg) {
 	}
 }
 
+static uint16_t dev_always_poll(uint16_t events) { return (uint16_t)(events & (kPollIn | kPollOut)); }
+
+static uint16_t dev_console_poll(uint16_t events) {
+	uint16_t rev = (uint16_t)(events & kPollOut);
+	if (tty_buffered() || g_tty.eof)
+		rev |= (uint16_t)(events & kPollIn);
+	return rev;
+}
+
+static uint16_t dev_serial_poll(uint16_t events) {
+	uint16_t rev = (uint16_t)(events & kPollOut);
+	if (serial::pending())
+		rev |= (uint16_t)(events & kPollIn);
+	return rev;
+}
+
+static uint16_t dev_kbd_poll(uint16_t events) { return kbd::pending() ? (uint16_t)(events & kPollIn) : 0; }
+
+static uint16_t dev_fb_poll(uint16_t events) { return (uint16_t)(events & kPollOut); }
+
+static bool tty_read_ready() {
+	if (g_tty.eof)
+		return true;
+	if (!tty_buffered())
+		return false;
+	if (!(g_tty.flags & kTtyCanon))
+		return true;
+	for (uint32_t i = g_tty.tail; i != g_tty.head; i = (i + 1u) % kTtyBuf)
+		if (g_tty.buf[i] == '\n')
+			return true;
+	return false;
+}
+
+static uint16_t dev_tty_poll(uint16_t events) {
+	uint16_t rev = (uint16_t)(events & kPollOut);
+	if (tty_read_ready())
+		rev |= (uint16_t)(events & kPollIn);
+	return rev;
+}
+
 static const dev g_devs[] = {
-	{"null", dev_null_rd, dev_null_wr, nullptr},
-	{"zero", dev_zero_rd, dev_zero_wr, nullptr},
-	{"console", dev_console_rd, dev_console_wr, nullptr},
-	{"serial", dev_serial_rd, dev_serial_wr, nullptr},
-	{"kbd", dev_kbd_rd, nullptr, nullptr},
-	{"fb", nullptr, dev_fb_wr, nullptr},
-	{"tty", dev_tty_rd, dev_tty_wr, dev_tty_ctl},
+	{"null", dev_null_rd, dev_null_wr, nullptr, dev_always_poll},
+	{"zero", dev_zero_rd, dev_zero_wr, nullptr, dev_always_poll},
+	{"console", dev_console_rd, dev_console_wr, nullptr, dev_console_poll},
+	{"serial", dev_serial_rd, dev_serial_wr, nullptr, dev_serial_poll},
+	{"kbd", dev_kbd_rd, nullptr, nullptr, dev_kbd_poll},
+	{"fb", nullptr, dev_fb_wr, nullptr, dev_fb_poll},
+	{"tty", dev_tty_rd, dev_tty_wr, dev_tty_ctl, dev_tty_poll},
 };
 static constexpr uint32_t kDevCount = sizeof(g_devs) / sizeof(g_devs[0]);
 
@@ -441,6 +489,10 @@ static int dev_write(node* n, const void* buf, uint32_t off, uint32_t len) {
 static int dev_node_ctl(node* n, uint32_t req, void* arg) {
 	dev* d = (dev*)n->internal;
 	return d->ctl ? d->ctl(d, req, arg) : -kErrInval;
+}
+static uint16_t dev_node_poll(node* n, uint32_t, uint16_t events) {
+	dev* d = (dev*)n->internal;
+	return d->poll ? d->poll(events) : 0;
 }
 
 static int dev_readdir(node* n, uint32_t index, node* out) {
@@ -461,6 +513,7 @@ static int dev_readdir(node* n, uint32_t index, node* out) {
 	out->read = dev_read;
 	out->write = dev_write;
 	out->ctl = dev_node_ctl;
+	out->poll = dev_node_poll;
 	out->internal = (void*)&d[index];
 	return 0;
 }
@@ -480,6 +533,7 @@ static node* dev_find_child(node* n, const char* name) {
 		out->read = dev_read;
 		out->write = dev_write;
 		out->ctl = dev_node_ctl;
+		out->poll = dev_node_poll;
 		out->internal = (void*)&d[i];
 		return out;
 	}
@@ -599,6 +653,26 @@ struct memwin {
 
 static pipebuf* pipe_of(node* n) { return (pipebuf*)n->internal; }
 
+static uint16_t pipe_poll(node* n, uint32_t flags, uint16_t events) {
+	pipebuf* p = pipe_of(n);
+	if (!p)
+		return kPollErr;
+
+	uint16_t rev = 0;
+	if (flags & kPipeWriteEnd) {
+		if (!p->readers)
+			rev |= kPollErr | kPollHup;
+		else if ((events & kPollOut) && p->n < kPipeBytes)
+			rev |= kPollOut;
+	} else {
+		if ((events & kPollIn) && p->n)
+			rev |= kPollIn;
+		if (!p->writers)
+			rev |= kPollHup;
+	}
+	return rev;
+}
+
 int fd_open(const char* path, uint32_t flags) {
 	ofile* g_fd = fds();
 	if (!g_fd)
@@ -668,6 +742,8 @@ static void fd_unshare(const ofile* f) {
 		task::unblock(p->wr_wait);
 		p->wr_wait = nullptr;
 	}
+
+	task::wake_pollers();
 
 	if (!p->writers && !p->readers)
 		p->open = 0;
@@ -770,6 +846,8 @@ static int pipe_rd(node* n, void* buf, uint32_t, uint32_t len) {
 		task::unblock(p->wr_wait);
 		p->wr_wait = nullptr;
 	}
+	if (got)
+		task::wake_pollers();
 	return (int)got;
 }
 
@@ -793,6 +871,7 @@ static int pipe_wr(node* n, const void* buf, uint32_t, uint32_t len) {
 			p->rd_wait = nullptr;
 		}
 	}
+	task::wake_pollers();
 	return (int)put;
 }
 
@@ -835,6 +914,7 @@ int pipe(int ends[2]) {
 		e->n.internal = p;
 		e->n.read = pipe_rd;
 		e->n.write = pipe_wr;
+		e->n.poll = pipe_poll;
 		e->n.name = e->n.name_buf;
 		strncpy(e->n.name_buf, i == r ? "pipe_r" : "pipe_w", sizeof e->n.name_buf - 1);
 		e->flags = (i == r) ? 0u : kPipeWriteEnd;
@@ -872,6 +952,15 @@ int mem_wr(node* n, const void* buf, uint32_t, uint32_t len) {
 	return (int)put;
 }
 
+static uint16_t mem_poll(node* n, uint32_t, uint16_t events) {
+	memwin* m = (memwin*)n->internal;
+	if (!m || !m->buf)
+		return kPollErr;
+	if ((events & kPollOut) && m->wpos < m->cap)
+		return kPollOut;
+	return 0;
+}
+
 int fd_mem(void* buf, uint32_t size) {
 	ofile* g_fd = fds();
 	static memwin wins[4];
@@ -897,6 +986,7 @@ int fd_mem(void* buf, uint32_t size) {
 		e->n.type = kTypeMem;
 		e->n.internal = m;
 		e->n.write = mem_wr;
+		e->n.poll = mem_poll;
 		e->n.name = e->n.name_buf;
 		strncpy(e->n.name_buf, "mem", sizeof e->n.name_buf - 1);
 		return i;
@@ -940,6 +1030,60 @@ int ioctl(int fd, uint32_t req, void* arg) {
 	if (!e->n.ctl)
 		return -kErrInval;
 	return e->n.ctl(&e->n, req, arg);
+}
+
+static uint16_t ofile_poll(ofile* e, uint16_t events) {
+	if (!e->n.type)
+		return kPollNval;
+	if (e->n.poll)
+		return e->n.poll(&e->n, e->flags, events);
+	if (e->n.type == kTypeFile || e->n.type == kTypeDir)
+		return (uint16_t)(events & (kPollIn | kPollOut));
+	return 0;
+}
+
+constexpr uint32_t kMaxPoll = 64;
+
+int poll(pollfd* pfds, uint32_t nfds, int timeout_ms) {
+	ofile* g_fd = fds();
+	if (!g_fd || nfds > kMaxPoll || (nfds && !pfds))
+		return -kErrInval;
+
+	uint32_t deadline = 0;
+	if (timeout_ms > 0) {
+		uint32_t ticks = ticks_for_ms((uint32_t)timeout_ms);
+		if (!ticks)
+			ticks = 1; // a timeout shorter than a tick still has to expire
+		deadline = task::ticks_now() + ticks;
+		if (!deadline)
+			deadline = ~0u;
+	}
+
+	for (;;) {
+		int ready = 0;
+		for (uint32_t i = 0; i < nfds; ++i) {
+			pollfd* p = &pfds[i];
+			p->revents = 0;
+			if (p->fd < 0)
+				continue; // negative descriptors are ignored
+			if (p->fd >= kMaxFd) {
+				p->revents = kPollNval;
+				++ready;
+				continue;
+			}
+			p->revents = ofile_poll(&g_fd[p->fd], p->events);
+			if (p->revents)
+				++ready;
+		}
+
+		if (ready || timeout_ms == 0)
+			return ready;
+		if (deadline && (int32_t)(task::ticks_now() - deadline) >= 0)
+			return 0;
+		const int r = task::poll_wait(deadline);
+		if (r < 0)
+			return r;
+	}
 }
 
 // point one fd at the same open file, vacating the target first
@@ -1026,6 +1170,7 @@ bool init() {
 	g_root.type = kTypeDir;
 	g_root.readdir = ext_readdir;
 	g_root.find_child = ext_find_child;
+	g_root.poll = ext_poll;
 	fs::stat st;
 	if (!fs::getstat(2, &st))
 		return false;
@@ -1062,6 +1207,7 @@ bool init() {
 		e->n.type = kTypeChar;
 		e->n.read = dev_read;
 		e->n.write = dev_write;
+		e->n.poll = dev_node_poll;
 		e->n.internal = (void*)cons;
 		// pos and flags stay zero
 	}

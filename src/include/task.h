@@ -87,6 +87,7 @@ struct task {
 	uint32_t sig_active;			// the signal whose handler is running
 	uint32_t sig_saved_mask;		// the mask to put back when it returns
 	uint32_t sleep_until;			// tick it is asleep until 0 if awake
+	bool polling;					// parked in poll and wants to know when an fd moves
 
 	bool in_syscall;
 	bool owns_frames;
@@ -129,11 +130,13 @@ void yield();	 // same thing, spelled for callers that block
 void block();
 void block_on(task** slot);
 void unblock(task* t);
-uint32_t ticks_now();		 // timer interrupts since boot
-int sleep_ticks(uint32_t n); // park for n ticks, or until a signal arrives
-void on_tick();				 // the pit handler calls this
-bool preempt(Registers* r);	 // true if the tick took the cpu away
-int runnable();				 // how many are ready, for the boot test
+uint32_t ticks_now();		   // timer interrupts since boot
+int sleep_ticks(uint32_t n);   // park for n ticks, or until a signal arrives
+int poll_wait(uint32_t until); // park until a pollable fd moves or the tick arrives, 0 means no deadline
+void wake_pollers();		   // an fd may have become ready
+void on_tick();				   // the pit handler calls this
+bool preempt(Registers* r);	   // true if the tick took the cpu away
+int runnable();				   // how many are ready, for the boot test
 
 // fork the current process
 task* fork();
