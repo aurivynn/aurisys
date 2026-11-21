@@ -188,6 +188,7 @@ static bool load_inode(uint32_t ino) {
 
 static bool inode_is_dir() { return (r16(g_ino) & 0xF000) == 0x4000; }
 static bool inode_is_file() { return (r16(g_ino) & 0xF000) == 0x8000; }
+static bool inode_is_link() { return (r16(g_ino) & 0xF000) == 0xA000; }
 
 static uint32_t inode_size() {
 	const uint32_t lo = r32(g_ino + 4);
@@ -577,61 +578,149 @@ bool lookup_abs(const char* path, uint32_t* ino_out) {
 	return true;
 }
 
-bool resolve(const char* path, const char* base, char* buf, uint32_t bufsz) {
+static int read_link(uint32_t ino, char* buf, uint32_t bufsz);
+
+static bool parent_lookup(char* abs, char* name, uint32_t* ino) {
+	char* slash = name - 1;
+	const char saved = *slash;
+	*slash = 0;
+	const bool ok = lookup_abs(abs, ino);
+	*slash = saved;
+	return ok;
+}
+
+// dir + "/" + len bytes of name into out
+static bool join_path(char* out, uint32_t outsz, const char* dir, const char* name, uint32_t nlen) {
+	uint32_t o = 0;
+	if (dir && *dir) {
+		const uint32_t dl = (uint32_t)strlen(dir);
+		if (dl + 1 >= outsz)
+			return false;
+		memcpy(out, dir, dl);
+		o = dl;
+	}
+	if (o == 0 || out[o - 1] != '/') {
+		if (o + 1 >= outsz)
+			return false;
+		out[o++] = '/';
+	}
+	if (o + nlen >= outsz)
+		return false;
+	memcpy(out + o, name, nlen);
+	out[o + nlen] = 0;
+	return true;
+}
+
+// walk the path a component at a time
+bool resolve(const char* path, const char* base, char* buf, uint32_t bufsz, bool follow_final) {
 	if (!path || !buf || bufsz < 2)
 		return false;
-	char tmp[256];
+
+	char work[512], spare[512];
 	if (path[0] == '/') {
-		tmp[0] = 0;
+		const uint32_t n = (uint32_t)strlen(path);
+		if (n + 1 > sizeof work)
+			return false;
+		memcpy(work, path, n + 1);
 	} else {
-		strncpy(tmp, base ? base : "/", sizeof tmp - 1);
-		tmp[sizeof tmp - 1] = 0;
+		const char* b = base ? base : "/";
+		const uint32_t bl = (uint32_t)strlen(b);
+		const uint32_t pl = (uint32_t)strlen(path);
+		uint32_t o = 0;
+		if (bl + pl + 2 > sizeof work)
+			return false;
+		memcpy(work, b, bl);
+		o = bl;
+		if (o == 0 || work[o - 1] != '/')
+			work[o++] = '/';
+		memcpy(work + o, path, pl + 1);
 	}
-	int out = (int)strlen(tmp);
-	const char* s = path;
-	while (*s) {
+
+	char prefix[256] = "/";
+	uint32_t plen = 1;
+	int hops = 0;
+	const char* s = work;
+	for (;;) {
 		while (*s == '/')
 			++s;
 		if (!*s)
 			break;
+
 		const char* e = s;
 		while (*e && *e != '/')
 			++e;
-		const int clen = (int)(e - s);
-		if (clen == 1 && s[0] == '.') {
+		const uint32_t nlen = (uint32_t)(e - s);
+
+		if (nlen == 1 && s[0] == '.') {
 			s = e;
 			continue;
 		}
-		if (clen == 2 && s[0] == '.' && s[1] == '.') {
-			while (out > 1 && tmp[out - 1] == '/')
-				--out;
-			while (out > 0 && tmp[out - 1] != '/')
-				--out;
-			if (out > 1)
-				--out;
+		if (nlen == 2 && s[0] == '.' && s[1] == '.') {
+			while (plen > 1 && prefix[plen - 1] != '/')
+				--plen;
+			if (plen > 1)
+				--plen;
+			prefix[plen] = 0;
 			s = e;
 			continue;
 		}
-		if (out == 0)
-			tmp[out++] = '/';
-		else if (tmp[out - 1] != '/')
-			tmp[out++] = '/';
-		if (out + clen >= (int)sizeof tmp)
+
+		char cand[256];
+		if (!join_path(cand, sizeof cand, prefix, s, nlen))
 			return false;
-		memcpy(tmp + out, s, (size_t)clen);
-		out += clen;
+
+		bool final = true;
+		for (const char* q = e; *q; ++q) {
+			if (*q != '/') {
+				final = false;
+				break;
+			}
+		}
+
+		uint32_t ino;
+		if (lookup_abs(cand, &ino)) {
+			struct stat st;
+			if (!getstat(ino, &st))
+				return false;
+			if ((st.mode & 0xF000) == 0xA000 && (follow_final || !final)) {
+				if (++hops > 8)
+					return false;
+				char target[256];
+				const int tn = read_link(ino, target, sizeof target);
+				if (tn < 0)
+					return false;
+
+				uint32_t o = 0;
+				if (target[0] == '/') {
+					prefix[0] = '/';
+					prefix[1] = 0;
+					plen = 1;
+				}
+
+				memcpy(spare, target, (uint32_t)tn);
+				o = (uint32_t)tn;
+				const uint32_t rl = (uint32_t)strlen(e);
+				if (o + rl + 1 > sizeof spare)
+					return false;
+				memcpy(spare + o, e, rl + 1);
+				memcpy(work, spare, o + rl + 1);
+				s = work;
+				continue;
+			}
+		}
+
+		const uint32_t clen = (uint32_t)strlen(cand);
+		if (clen + 1 > sizeof prefix)
+			return false;
+		memcpy(prefix, cand, clen + 1);
+		plen = clen;
 		s = e;
 	}
-	const int n = out == 0 ? 1 : out;
-	if ((uint32_t)n + 1 > bufsz)
+
+	const uint32_t n = (uint32_t)strlen(prefix);
+	if (n + 1 > bufsz)
 		return false;
-	if (out == 0) {
-		buf[0] = '/';
-		buf[1] = 0;
-		return true;
-	}
-	memcpy(buf, tmp, (size_t)n);
-	buf[n] = 0;
+	memcpy(buf, prefix, n + 1);
 	return true;
 }
 
@@ -667,7 +756,7 @@ bool getstat(uint32_t ino, struct stat* out) {
 }
 
 uint32_t read(uint32_t ino, void* buf, uint32_t len, uint32_t off) {
-	if (!g_mounted || !load_inode(ino) || !inode_is_file())
+	if (!g_mounted || !load_inode(ino) || (!inode_is_file() && !inode_is_link()))
 		return 0;
 	const uint32_t size = inode_size();
 	if (off >= size)
@@ -695,6 +784,25 @@ uint32_t read(uint32_t ino, void* buf, uint32_t len, uint32_t off) {
 		}
 	}
 	return done;
+}
+
+static int read_link(uint32_t ino, char* buf, uint32_t bufsz) {
+	if (!g_mounted || !load_inode(ino) || !inode_is_link() || !buf || bufsz == 0)
+		return -1;
+	const uint32_t size = inode_size();
+	if (size >= bufsz)
+		return -1;
+	if (!(r32(g_ino + 0x20) & kExtentsFl)) {
+		if (size > 60)
+			return -1;
+		memcpy(buf, g_ino + 0x28, size);
+	} else {
+		const uint32_t got = read(ino, buf, size, 0);
+		if (got != size)
+			return -1;
+	}
+	buf[size] = 0;
+	return (int)size;
 }
 
 int list_dir(uint32_t dir_ino, dirent_cb cb, void* ctx) {
@@ -842,12 +950,14 @@ bool write_file(const char* base, const char* path, const void* data, uint32_t l
 	const bool exists = lookup_abs(abs, &ino);
 	ext_entry old_ext[4];
 	uint32_t old_n = 0;
+	uint16_t keep_links = 1;
 	if (exists) {
 		// create only refuses to touch a file thats already there
 		if (!(flags & (O_TRUNC | O_APPEND)))
 			return false;
 		if (!load_inode(ino) || !inode_is_file())
-			return false;	 // dirs do not get overwritten
+			return false; // dirs do not get overwritten
+		keep_links = r16(g_ino + 0x1A);
 		if (flags & O_TRUNC) // remember the old blocks to free later
 			if (!inline_extents(old_ext, &old_n))
 				return false;
@@ -867,7 +977,7 @@ bool write_file(const char* base, const char* path, const void* data, uint32_t l
 		memset(g_ino, 0, sizeof g_ino);
 		w16(g_ino, 0x81A4); // S_IFREG | 0644
 		w32(g_ino + 4, len);
-		w16(g_ino + 0x1A, 1); // links
+		w16(g_ino + 0x1A, keep_links); // links
 		w32(g_ino + 0x20, kExtentsFl);
 		w32(g_ino + 0x1C, 0); // i_blocks
 		w16(g_ino + 0x28, kExtMagic);
@@ -1025,11 +1135,140 @@ bool write_at(uint32_t ino, const void* buf, uint32_t off, uint32_t len) {
 	return commit_counts((int)alloc_total, 0, 0);
 }
 
+bool link(const char* base, const char* oldpath, const char* newpath) {
+	if (!g_mounted || !oldpath || !newpath)
+		return false;
+
+	char oldabs[256], newabs[256];
+	if (!resolve(oldpath, base, oldabs, sizeof oldabs, false))
+		return false;
+	if (!resolve(newpath, base, newabs, sizeof newabs, false))
+		return false;
+
+	char* name = newabs;
+	for (char* c = newabs; *c; ++c)
+		if (*c == '/')
+			name = c + 1;
+	if (*name == 0)
+		return false;
+	uint32_t old_ino, parent_ino;
+	if (!lookup_abs(oldabs, &old_ino))
+		return false;
+	if (!load_inode(old_ino) || !inode_is_file())
+		return false; // directories and symlinks stay out of this
+	const uint16_t links = r16(g_ino + 0x1A);
+	if (links == 0xFFFF)
+		return false;
+	if (!parent_lookup(newabs, name, &parent_ino))
+		return false;
+	struct stat pst;
+	if (!getstat(parent_ino, &pst) || (pst.mode & 0xF000) != 0x4000)
+		return false;
+	uint32_t exists;
+	if (lookup_abs(newabs, &exists))
+		return false; // already there
+
+	if (!load_inode(old_ino))
+		return false;
+	w16(g_ino + 0x1A, (uint16_t)(links + 1));
+	w32(g_ino + 0x0C, time::unix()); // ctime
+	if (!store_inode(old_ino))
+		return false;
+	if (!dir_add_entry(parent_ino, name, old_ino, 1)) {
+		if (load_inode(old_ino)) {
+			w16(g_ino + 0x1A, links);
+			store_inode(old_ino);
+		}
+		return false;
+	}
+	return true;
+}
+
+bool symlink(const char* target, const char* base, const char* path) {
+	if (!g_mounted || !target || !*target || !path)
+		return false;
+	const uint32_t len = (uint32_t)strlen(target);
+	if (len > 255)
+		return false;
+
+	char abs[256];
+	if (!resolve(path, base, abs, sizeof abs, false))
+		return false;
+
+	char* name = abs;
+	for (char* c = abs; *c; ++c)
+		if (*c == '/')
+			name = c + 1;
+	if (*name == 0)
+		return false;
+	uint32_t parent_ino;
+	if (!parent_lookup(abs, name, &parent_ino))
+		return false;
+	struct stat pst;
+	if (!getstat(parent_ino, &pst) || (pst.mode & 0xF000) != 0x4000)
+		return false;
+	uint32_t exists;
+	if (lookup_abs(abs, &exists))
+		return false; // symlink does not replace an existing name
+
+	const uint32_t ino = alloc_inode();
+	if (ino == 0)
+		return false;
+
+	memset(g_ino, 0, sizeof g_ino);
+	w16(g_ino, 0xA1FF); // S_IFLNK | 0777
+	w32(g_ino + 4, len);
+	w16(g_ino + 0x1A, 1);
+	uint32_t used = 0;
+	if (len <= 60) {
+		memcpy(g_ino + 0x28, target, len); // fast symlink lives in i_block
+	} else {
+		w32(g_ino + 0x20, kExtentsFl);
+		w16(g_ino + 0x28, kExtMagic);
+		w16(g_ino + 0x2A, 0);
+		w16(g_ino + 0x2C, 4);
+		w16(g_ino + 0x2E, 0);
+		if (g_inode_size >= 256)
+			w16(g_ino + 0x80, 32);
+		used = write_blocks(target, len, 0);
+		if (used == 0)
+			return false;
+		w32(g_ino + 0x1C, used * (g_bs >> 9));
+	}
+	stamp_created();
+	if (!store_inode(ino))
+		return false;
+	if (!dir_add_entry(parent_ino, name, ino, 7))
+		return false;
+	return commit_counts((int)used, 1, 0);
+}
+
+int readlink(const char* base, const char* path, char* buf, uint32_t bufsz) {
+	if (!buf || bufsz == 0 || !path)
+		return -1;
+	char abs[256];
+	if (!resolve(path, base, abs, sizeof abs, false))
+		return -1;
+	uint32_t ino;
+	if (!lookup_abs(abs, &ino))
+		return -1;
+	char target[256];
+	const int n = read_link(ino, target, sizeof target);
+	if (n < 0)
+		return -1;
+	uint32_t out = (uint32_t)n;
+	if (out >= bufsz)
+		out = bufsz - 1;
+	memcpy(buf, target, out);
+	buf[out] = 0;
+	return (int)out;
+}
+
 bool mkdir(const char* base, const char* path) {
 	if (!g_mounted || !path)
 		return false;
 	char abs[256];
-	if (!resolve(path, base, abs, sizeof abs))
+	if (!resolve(path, base, abs, sizeof abs, false))
 		return false;
 
 	char* name = abs;
@@ -1110,11 +1349,11 @@ bool mkdir(const char* base, const char* path) {
 	return commit_counts(1, 1, 1);
 }
 
-bool rm(const char* base, const char* path) {
+static bool remove_path(const char* base, const char* path, bool dir_only) {
 	if (!g_mounted || !path)
 		return false;
 	char abs[256];
-	if (!resolve(path, base, abs, sizeof abs))
+	if (!resolve(path, base, abs, sizeof abs, false))
 		return false;
 
 	char* name = abs;
@@ -1125,15 +1364,8 @@ bool rm(const char* base, const char* path) {
 		return false; // rm / is a no no
 
 	uint32_t parent_ino, ino;
-	{
-		char* slash = name - 1;
-		const char saved = *slash;
-		*slash = 0;
-		const bool ok = lookup_abs(abs, &parent_ino);
-		*slash = saved;
-		if (!ok)
-			return false;
-	}
+	if (!parent_lookup(abs, name, &parent_ino))
+		return false;
 	if (!lookup_abs(abs, &ino))
 		return false;
 
@@ -1144,12 +1376,15 @@ bool rm(const char* base, const char* path) {
 		return false;
 
 	const bool is_dir = inode_is_dir();
-	if (!is_dir && !inode_is_file())
+	if (dir_only && !is_dir)
+		return false;
+	if (!is_dir && !inode_is_file() && !inode_is_link())
 		return false;
 	if (is_dir) {
 		// only empty dirs go. . and .. count as 2, more means children
 		auto skip = [](const char*, uint32_t, uint8_t, void*) { return true; };
-		if (list_dir(ino, skip, nullptr) > 2)
+		const int n = list_dir(ino, skip, nullptr);
+		if (n < 0 || n > 2)
 			return false;
 	}
 
@@ -1165,12 +1400,19 @@ bool rm(const char* base, const char* path) {
 			if (!map_lblock(b, &phys) || !read_block(phys, g_b2))
 				return false;
 			uint32_t off = 0, prev = 0;
+			const uint8_t want = (uint8_t)strlen(name);
 			while (off + 8 <= g_bs) {
 				const uint16_t rc = r16(g_b2 + off + 4);
 				if (rc < 8 || off + rc > g_bs)
 					return false; // malformed dir
-				if (r32(g_b2 + off) == ino) {
-					w16(g_b2 + prev + 4, (uint16_t)(r16(g_b2 + prev + 4) + rc));
+				// hard links share an inode so the name has to match too
+				if (r32(g_b2 + off) == ino && g_b2[off + 6] == want && off + 8 + want <= g_bs &&
+					memcmp(g_b2 + off + 8, name, want) == 0) {
+					if (off == 0) {
+						w32(g_b2, 0); // first entry leave it as free space
+					} else {
+						w16(g_b2 + prev + 4, (uint16_t)(r16(g_b2 + prev + 4) + rc));
+					}
 					if (!write_block(phys, g_b2))
 						return false;
 					done = true;
@@ -1190,38 +1432,59 @@ bool rm(const char* base, const char* path) {
 	if (!store_inode(parent_ino))
 		return false;
 
-	ext_entry old[4];
-	uint32_t old_n = 0;
-	if (!load_inode(ino) || !inline_extents(old, &old_n))
+	if (!load_inode(ino))
 		return false;
+	const uint16_t links = r16(g_ino + 0x1A);
+	const bool last = is_dir || links <= 1;
 	uint32_t freed = 0;
-	for (uint32_t i = 0; i < old_n; ++i) {
-		if (!free_blocks(old[i].first, old[i].len))
+
+	if (last) {
+		if (r32(g_ino + 0x20) & kExtentsFl) {
+			ext_entry old[4];
+			uint32_t old_n = 0;
+			if (!inline_extents(old, &old_n))
+				return false;
+			for (uint32_t i = 0; i < old_n; ++i) {
+				if (!free_blocks(old[i].first, old[i].len))
+					return false;
+				freed += old[i].len;
+			}
+		} else if (!inode_is_link()) {
+			return false; // only the layouts this fs creates
+		}
+
+		if (is_dir) {
+			if (!load_inode(parent_ino))
+				return false;
+			const uint16_t plinks = r16(g_ino + 0x1A);
+			if (plinks)
+				w16(g_ino + 0x1A, (uint16_t)(plinks - 1)); // lost a subdir
+			if (!store_inode(parent_ino))
+				return false;
+		}
+
+		if (!read_block(g_ibb, g_b1))
 			return false;
-		freed += old[i].len;
+		const uint32_t bit = ino - 1;
+		g_b1[bit / 8] &= (uint8_t)~(1u << (bit % 8));
+		if (!write_block(g_ibb, g_b1))
+			return false;
+		if (!read_block(g_itb + (ino - 1) / g_ipb, g_b1))
+			return false;
+		memset(g_b1 + ((ino - 1) % g_ipb) * g_inode_size, 0, g_inode_size);
+		if (!write_block(g_itb + (ino - 1) / g_ipb, g_b1))
+			return false;
+
+		return commit_counts(-(int)freed, -1, is_dir ? -1 : 0);
 	}
 
-	if (is_dir) {
-		if (!load_inode(parent_ino))
-			return false;
-		w16(g_ino + 0x1A, (uint16_t)(r16(g_ino + 0x1A) - 1)); // lost a subdir
-		if (!store_inode(parent_ino))
-			return false;
-	}
-
-	if (!read_block(g_ibb, g_b1))
-		return false;
-	const uint32_t bit = ino - 1;
-	g_b1[bit / 8] &= (uint8_t)~(1u << (bit % 8));
-	if (!write_block(g_ibb, g_b1))
-		return false;
-	if (!read_block(g_itb + (ino - 1) / g_ipb, g_b1))
-		return false;
-	memset(g_b1 + ((ino - 1) % g_ipb) * g_inode_size, 0, g_inode_size);
-	if (!write_block(g_itb + (ino - 1) / g_ipb, g_b1))
-		return false;
-
-	return commit_counts(-(int)freed, -1, is_dir ? -1 : 0);
+	w16(g_ino + 0x1A, (uint16_t)(links - 1));
+	w32(g_ino + 0x0C, time::unix()); // ctime
+	return store_inode(ino);
 }
+
+bool rm(const char* base, const char* path) { return remove_path(base, path, false); }
+
+bool rmdir(const char* base, const char* path) { return remove_path(base, path, true); }
 
 } // namespace fs

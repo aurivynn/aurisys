@@ -43,6 +43,10 @@ enum {
 	SYS_chdir,
 	SYS_time,
 	SYS_poll,
+	SYS_rmdir,
+	SYS_link,
+	SYS_symlink,
+	SYS_readlink,
 };
 
 // terminal modes, for ioctl on /dev/tty
@@ -80,7 +84,7 @@ enum {
 	kErrIntr = 4,	// interrupted before it got anywhere
 };
 
-enum { kTypeFile = 1, kTypeDir = 2, kTypeChar = 3 };
+enum { kTypeFile = 1, kTypeDir = 2, kTypeChar = 3, kTypeLink = 7 };
 
 constexpr uint32_t O_RDONLY = 0u; // opening for reading is the absence of bits
 constexpr uint32_t O_WRONLY = 1u;

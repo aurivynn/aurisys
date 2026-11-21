@@ -8,7 +8,9 @@
 #include "drivers/serial.h"
 #include "drivers/timer.h"
 #include "fs.h"
+#include "lib/klog.h"
 #include "lib/mem.h"
+#include "lib/random.h"
 #include "lib/str.h"
 #include "shell/terminal.h"
 #include "task.h"
@@ -167,10 +169,11 @@ static node* ext_find_child(node* n, const char* name) {
 
 // devfs
 
-typedef int (*dev_rd)(void* in, void* buf, uint32_t len);
+typedef int (*dev_rd)(void* in, void* buf, uint32_t off, uint32_t len);
 typedef int (*dev_wr)(void* in, const void* buf, uint32_t len);
 typedef int (*dev_ioctl_fn)(void* in, uint32_t req, void* arg);
 typedef uint16_t (*dev_poll_fn)(uint16_t events);
+typedef uint32_t (*dev_start_fn)();
 
 struct dev {
 	const char* name;
@@ -178,15 +181,16 @@ struct dev {
 	dev_wr wr;
 	dev_ioctl_fn ctl;
 	dev_poll_fn poll;
+	dev_start_fn start; // where a fresh descriptor begins, null for zero
 };
 
-static int dev_null_rd(void*, void*, uint32_t len) {
+static int dev_null_rd(void*, void*, uint32_t, uint32_t len) {
 	(void)len;
 	return 0; // nothing here, reads hit eof
 }
 static int dev_null_wr(void*, const void*, uint32_t len) { return (int)len; } // swallows it all
 
-static int dev_zero_rd(void*, void* buf, uint32_t len) {
+static int dev_zero_rd(void*, void* buf, uint32_t, uint32_t len) {
 	memset(buf, 0, len);
 	return (int)len;
 }
@@ -194,7 +198,7 @@ static int dev_zero_wr(void*, const void*, uint32_t len) { return (int)len; }
 
 static int tty_take(void* buf, uint32_t len);
 
-static int dev_console_rd(void*, void* buf, uint32_t len) {
+static int dev_console_rd(void*, void* buf, uint32_t, uint32_t len) {
 	if (len == 0)
 		return 0;
 	return tty_take(buf, len);
@@ -208,7 +212,7 @@ static int dev_console_wr(void*, const void* buf, uint32_t len) {
 	return (int)len;
 }
 
-static int dev_serial_rd(void*, void* buf, uint32_t len) {
+static int dev_serial_rd(void*, void* buf, uint32_t, uint32_t len) {
 	if (len == 0)
 		return 0;
 	int c = serial::recv();
@@ -224,7 +228,7 @@ static int dev_serial_wr(void*, const void* buf, uint32_t len) {
 	return (int)len;
 }
 
-static int dev_kbd_rd(void*, void* buf, uint32_t len) {
+static int dev_kbd_rd(void*, void* buf, uint32_t, uint32_t len) {
 	if (len == 0)
 		return 0;
 	for (;;) {
@@ -241,6 +245,13 @@ static int dev_fb_wr(void*, const void* buf, uint32_t len) {
 	const char* s = (const char*)buf;
 	for (uint32_t i = 0; i < len; ++i)
 		console::putchar(s[i]); // to the screen only, no serial
+	return (int)len;
+}
+
+static int dev_kmsg_rd(void*, void* buf, uint32_t off, uint32_t len) { return klog::read(off, buf, len); }
+
+static int dev_random_rd(void*, void* buf, uint32_t, uint32_t len) {
+	random::fill(buf, len);
 	return (int)len;
 }
 
@@ -360,7 +371,7 @@ static int tty_take(void* buf, uint32_t len) {
 }
 
 // deliver a whole line assembled here out of the keystrokes that make it up
-static int dev_tty_rd(void*, void* buf, uint32_t len) {
+static int dev_tty_rd(void*, void* buf, uint32_t, uint32_t len) {
 	if (len == 0)
 		return 0;
 	const bool canon = (g_tty.flags & kTtyCanon) != 0;
@@ -466,20 +477,21 @@ static uint16_t dev_tty_poll(uint16_t events) {
 }
 
 static const dev g_devs[] = {
-	{"null", dev_null_rd, dev_null_wr, nullptr, dev_always_poll},
-	{"zero", dev_zero_rd, dev_zero_wr, nullptr, dev_always_poll},
-	{"console", dev_console_rd, dev_console_wr, nullptr, dev_console_poll},
-	{"serial", dev_serial_rd, dev_serial_wr, nullptr, dev_serial_poll},
-	{"kbd", dev_kbd_rd, nullptr, nullptr, dev_kbd_poll},
-	{"fb", nullptr, dev_fb_wr, nullptr, dev_fb_poll},
-	{"tty", dev_tty_rd, dev_tty_wr, dev_tty_ctl, dev_tty_poll},
+	{"null", dev_null_rd, dev_null_wr, nullptr, dev_always_poll, nullptr},
+	{"zero", dev_zero_rd, dev_zero_wr, nullptr, dev_always_poll, nullptr},
+	{"console", dev_console_rd, dev_console_wr, nullptr, dev_console_poll, nullptr},
+	{"serial", dev_serial_rd, dev_serial_wr, nullptr, dev_serial_poll, nullptr},
+	{"kbd", dev_kbd_rd, nullptr, nullptr, dev_kbd_poll, nullptr},
+	{"fb", nullptr, dev_fb_wr, nullptr, dev_fb_poll, nullptr},
+	{"tty", dev_tty_rd, dev_tty_wr, dev_tty_ctl, dev_tty_poll, nullptr},
+	{"kmsg", dev_kmsg_rd, nullptr, nullptr, dev_always_poll, klog::oldest},
+	{"random", dev_random_rd, nullptr, nullptr, dev_always_poll, nullptr},
 };
 static constexpr uint32_t kDevCount = sizeof(g_devs) / sizeof(g_devs[0]);
 
 static int dev_read(node* n, void* buf, uint32_t off, uint32_t len) {
-	(void)off;
 	dev* d = (dev*)n->internal;
-	return d->rd ? d->rd(d, buf, len) : 0;
+	return d->rd ? d->rd(d, buf, off, len) : 0;
 }
 static int dev_write(node* n, const void* buf, uint32_t off, uint32_t len) {
 	(void)off;
@@ -556,11 +568,11 @@ void tty_drain() {
 
 // walk a path a component at a time. fs already resolves relative to
 // cwd and folds .. so only plain names reach the find_child calls
-node* resolve(const char* path) {
+node* resolve(const char* path, bool follow) {
 	if (!path)
 		return nullptr;
 	char abs[256];
-	if (!fs::resolve(path, task::cwd(), abs, sizeof abs))
+	if (!fs::resolve(path, task::cwd(), abs, sizeof abs, follow))
 		return nullptr;
 	node* cur = &g_root;
 	char* tok = abs;
@@ -708,6 +720,11 @@ int fd_open(const char* path, uint32_t flags) {
 	e->n.name = e->n.name_buf; // the copy carries its own name buffer
 	e->pos = 0;
 	e->flags = flags;
+	if (e->n.type == kTypeChar && e->n.read == dev_read && e->n.internal) {
+		const dev* d = (const dev*)e->n.internal;
+		if (d->start)
+			e->pos = d->start();
+	}
 	if ((flags & O_APPEND) && e->n.inode) {
 		fs::stat st;
 		if (fs::getstat(e->n.inode, &st))

@@ -64,11 +64,23 @@ static int dispatch(regs* r) {
 	case SYS_mkdir:
 		return fs::mkdir(task::cwd(), (const char*)r->ebx) ? 0 : -1;
 	case SYS_unlink: {
-		vfs::node* n = vfs::resolve((const char*)r->ebx);
+		vfs::node* n = vfs::resolve((const char*)r->ebx, false);
 		if (n && n->mount)
 			return 1; // mount points stay
 		return fs::rm(task::cwd(), (const char*)r->ebx) ? 0 : -1;
 	}
+	case SYS_rmdir: {
+		vfs::node* n = vfs::resolve((const char*)r->ebx, false);
+		if (n && n->mount)
+			return 1;
+		return fs::rmdir(task::cwd(), (const char*)r->ebx) ? 0 : -1;
+	}
+	case SYS_link:
+		return fs::link(task::cwd(), (const char*)r->ebx, (const char*)r->ecx) ? 0 : -1;
+	case SYS_symlink:
+		return fs::symlink((const char*)r->ebx, task::cwd(), (const char*)r->ecx) ? 0 : -1;
+	case SYS_readlink:
+		return fs::readlink(task::cwd(), (const char*)r->ebx, (char*)r->ecx, r->edx);
 	case SYS_pipe: {
 		int fds[2] = {-1, -1};
 		if (vfs::pipe(fds))

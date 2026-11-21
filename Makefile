@@ -10,6 +10,7 @@ KERNEL_ELF := $(BUILD)/kernel.elf
 KERNEL_BIN := $(BUILD)/kernel.bin
 KERNEL_HDR := $(BUILD)/kernel.hdr
 FS_IMG := $(BUILD)/fs.img
+FSCK_IMG := $(BUILD)/fsck.img
 DISK_SECTORS := 32768
 PART_LBA := 2048
 PART_SECTORS := 30720
@@ -46,7 +47,7 @@ KERNEL_OBJS := $(BUILD)/entry.o $(BUILD)/font.o $(BUILD)/isr_stubs.o $(BUILD)/sy
                $(patsubst src/kernel/%.cpp,$(BUILD)/%.o,$(KERNEL_CPP))
 
 APPFLAGS := $(KFLAGS) -I src/apps
-APP_NAMES := cat date df echo fault heap help hexdump ls mem mkdir panic proc ps rm sh showenv spin ttytest uptime write
+APP_NAMES := cat date df dmesg echo fault heap help hexdump ln ls mem mkdir panic proc ps readlink rm rmdir sh showenv spin ttytest uptime write
 APP_SRCS := $(addprefix src/apps/,$(addsuffix .cpp,$(APP_NAMES)))
 APP_OBJS := $(addprefix $(BUILD)/app/,$(addsuffix .o,$(APP_NAMES)))
 APP_RT_OBJS := $(BUILD)/app/rt/crt0.o $(BUILD)/app/rt/lib.o $(BUILD)/app/rt/print.o \
@@ -56,7 +57,7 @@ APP_BINS := $(addprefix $(BUILD)/rootfs/bin/,$(APP_NAMES))
 COMPILE_DB_SRC := tools/gen_compile_db/main.cpp
 COMPILE_DB_BIN := $(BUILD)/gen_compile_db
 
-.PHONY: all compile-db run run-headless debug size fs-check clean
+.PHONY: all compile-db run run-headless debug size fs-check fsck clean
 
 .SECONDARY: $(APP_OBJS) $(APP_RT_OBJS)
 
@@ -165,6 +166,10 @@ fs-check: $(IMAGE) $(FS_IMG)
 	@echo "partition at lba $(PART_LBA) is byte-identical to fs.img"
 	@dumpe2fs -h $(FS_IMG) 2>/dev/null | grep -E "Filesystem features|Block size|Block count|Inode count|Free blocks|Free inodes"
 	@echo "fs.img is clean ext4"
+
+fsck: $(FS_IMG)
+	@cp $(FS_IMG) $(FSCK_IMG)
+	@e2fsck -fn $(FSCK_IMG); rc=$$?; rm -f $(FSCK_IMG); exit $$rc
 
 size: $(KERNEL_BIN)
 	@n=$$(stat -c %s $(KERNEL_BIN)); \

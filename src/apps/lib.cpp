@@ -33,6 +33,16 @@ int readdir(int fd, uint32_t index, vfs_dirent* out) {
 int fstat(int fd, file_stat* out) { return (int)sys_call(SYS_fstat, (uint32_t)fd, (uint32_t)(uintptr_t)out, 0, 0, 0); }
 int mkdir(const char* path) { return (int)sys_call(SYS_mkdir, (uint32_t)(uintptr_t)path, 0, 0, 0, 0); }
 int unlink(const char* path) { return (int)sys_call(SYS_unlink, (uint32_t)(uintptr_t)path, 0, 0, 0, 0); }
+int rmdir(const char* path) { return (int)sys_call(SYS_rmdir, (uint32_t)(uintptr_t)path, 0, 0, 0, 0); }
+int link(const char* oldpath, const char* newpath) {
+	return (int)sys_call(SYS_link, (uint32_t)(uintptr_t)oldpath, (uint32_t)(uintptr_t)newpath, 0, 0, 0);
+}
+int symlink(const char* target, const char* path) {
+	return (int)sys_call(SYS_symlink, (uint32_t)(uintptr_t)target, (uint32_t)(uintptr_t)path, 0, 0, 0);
+}
+int readlink(const char* path, char* buf, uint32_t size) {
+	return (int)sys_call(SYS_readlink, (uint32_t)(uintptr_t)path, (uint32_t)(uintptr_t)buf, size, 0, 0);
+}
 int pipe(int fds[2]) { return (int)sys_call(SYS_pipe, (uint32_t)(uintptr_t)fds, 0, 0, 0, 0); }
 int getcwd(char* buf, uint32_t size) { return (int)sys_call(SYS_cwd, (uint32_t)(uintptr_t)buf, size, 0, 0, 0); }
 int chdir(const char* path) { return (int)sys_call(SYS_chdir, (uint32_t)(uintptr_t)path, 0, 0, 0, 0); }

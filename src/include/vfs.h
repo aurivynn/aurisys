@@ -21,6 +21,7 @@ typedef uint16_t (*poll_fn)(node* n, uint32_t flags, uint16_t events);
 constexpr uint8_t kTypeFile = 1;
 constexpr uint8_t kTypeDir = 2;
 constexpr uint8_t kTypeChar = 3;
+constexpr uint8_t kTypeLink = 7;
 
 struct node {
 	const char* name; // points into name_buf
@@ -49,8 +50,8 @@ struct node {
 	char name_buf[64]; // the name lives in here
 };
 
-bool init();					 // ext4 root plus devfs at /dev plus the fd table
-node* resolve(const char* path); // relative paths resolve against the calling process cwd
+bool init();										 // ext4 root plus devfs at /dev plus the fd table
+node* resolve(const char* path, bool follow = true); // relative paths resolve against the calling process cwd
 node* root();
 int readdir(node* n, uint32_t index, node* out); // out filled, 0 ok, neg end
 bool mount(node* tree, const char* at);

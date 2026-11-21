@@ -24,8 +24,8 @@ bool getstat(uint32_t ino, struct stat* out);
 uint32_t read(uint32_t ino, void* buf, uint32_t len, uint32_t off); // bytes read 0 = eof/err
 int list_dir(uint32_t dir_ino, dirent_cb cb, void* ctx);			// entries seen -1 error 0 empty
 
-bool resolve(const char* path, const char* base, char* buf, uint32_t bufsz); // "/a/../b" -> "/b"
-bool chdir(const char* base, const char* path, char* out, uint32_t outsz);	 // must land on a dir
+bool resolve(const char* path, const char* base, char* buf, uint32_t bufsz, bool follow_final = true);
+bool chdir(const char* base, const char* path, char* out, uint32_t outsz); // must land on a dir
 
 void summary(uint32_t* block_size, uint32_t* blocks, uint32_t* free_blocks, uint32_t* inodes, uint32_t* free_inodes,
 			 uint32_t* feat_compat, uint32_t* feat_incompat, uint32_t* feat_ro);
@@ -35,5 +35,10 @@ bool write_file(const char* base, const char* path, const void* data, uint32_t l
 bool write_at(uint32_t ino, const void* buf, uint32_t off, uint32_t len);
 bool mkdir(const char* base, const char* path);
 bool rm(const char* base, const char* path);
+bool rmdir(const char* base, const char* path);
+
+bool link(const char* base, const char* oldpath, const char* newpath);
+bool symlink(const char* target, const char* base, const char* path);
+int readlink(const char* base, const char* path, char* buf, uint32_t bufsz);
 
 } // namespace fs
