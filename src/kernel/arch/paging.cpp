@@ -8,17 +8,13 @@
 
 namespace paging {
 
-namespace {
+static uint64_t g_pd_store[4][512] __attribute__((section(".paging"), aligned(4096)));
+static uint64_t g_pt_store[512] __attribute__((section(".paging"), aligned(4096)));
+static uint64_t g_pt_heap[512] __attribute__((section(".paging"), aligned(4096)));
 
-uint64_t g_pd_store[4][512] __attribute__((section(".paging"), aligned(4096)));
-uint64_t g_pt_store[512] __attribute__((section(".paging"), aligned(4096)));
-uint64_t g_pt_heap[512] __attribute__((section(".paging"), aligned(4096)));
+static space* g_current = nullptr;
 
-space* g_current = nullptr;
-
-void flush() { asm volatile("mov %0, %%cr3" ::"r"((uint32_t)(uintptr_t)g_current->pdpt) : "memory"); }
-
-} // namespace
+static void flush() { asm volatile("mov %0, %%cr3" ::"r"((uint32_t)(uintptr_t)g_current->pdpt) : "memory"); }
 
 __attribute__((aligned(4096))) space g_boot;
 

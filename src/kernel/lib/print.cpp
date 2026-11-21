@@ -4,11 +4,9 @@
 
 namespace print {
 
-namespace {
+static const char kDigits[] = "0123456789ABCDEF";
 
-const char kDigits[] = "0123456789ABCDEF";
-
-int to_digits(char* out, uint32_t v, uint32_t base) {
+static int to_digits(char* out, uint32_t v, uint32_t base) {
 	int n = 0;
 	if (v == 0)
 		out[n++] = '0';
@@ -19,7 +17,7 @@ int to_digits(char* out, uint32_t v, uint32_t base) {
 	return n;
 }
 
-void emit_number(emit_fn emit, char* dig, int n, int width, bool zero, bool left, char sign) {
+static void emit_number(emit_fn emit, char* dig, int n, int width, bool zero, bool left, char sign) {
 	int total = n + (sign ? 1 : 0);
 	if (sign)
 		emit(sign);
@@ -34,8 +32,6 @@ void emit_number(emit_fn emit, char* dig, int n, int width, bool zero, bool left
 		for (int p = total; p < width; ++p)
 			emit(' ');
 }
-
-} // namespace
 
 void vprintf(emit_fn emit, const char* fmt, va_list ap) {
 	for (; *fmt; ++fmt) {

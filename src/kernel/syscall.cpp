@@ -14,14 +14,12 @@
 
 #include <stdint.h>
 
-namespace {
-
 // pushed by syscall_stub
 struct regs {
 	uint32_t edi, esi, ebp, esp, ebx, edx, ecx, eax;
 };
 
-int dispatch(regs* r) {
+static int dispatch(regs* r) {
 	switch (r->eax) {
 	case SYS_read:
 		return vfs::fd_read((int)r->ebx, (void*)r->ecx, r->edx);
@@ -248,8 +246,6 @@ int dispatch(regs* r) {
 	}
 	return -kErrInval;
 }
-
-} // namespace
 
 // the int 0x80 gate
 extern "C" uint32_t syscall_dispatch(regs* r) {

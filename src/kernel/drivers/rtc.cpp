@@ -1,33 +1,23 @@
 #include "drivers/rtc.h"
 
+#include "arch/io.h"
 #include "lib/datetime.h"
 
 #include <stdint.h>
 
-namespace {
-
-inline void outb(uint16_t port, uint8_t val) { asm volatile("outb %0, %1" : : "a"(val), "Nd"(port)); }
-inline uint8_t inb(uint16_t port) {
-	uint8_t val;
-	asm volatile("inb %1, %0" : "=a"(val) : "Nd"(port));
-	return val;
+static uint8_t cmos(uint8_t reg) {
+	io::outb(0x70, reg);
+	return io::inb(0x71);
 }
 
-uint8_t cmos(uint8_t reg) {
-	outb(0x70, reg);
-	return inb(0x71);
-}
-
-bool settled() {
+static bool settled() {
 	for (int i = 0; i < 100000; ++i)
 		if (!(cmos(0x0A) & 0x80))
 			return true;
 	return false;
 }
 
-uint8_t bcd(uint8_t v) { return (uint8_t)((v & 0x0F) + (v >> 4) * 10); }
-
-} // namespace
+static uint8_t bcd(uint8_t v) { return (uint8_t)((v & 0x0F) + (v >> 4) * 10); }
 
 namespace rtc {
 

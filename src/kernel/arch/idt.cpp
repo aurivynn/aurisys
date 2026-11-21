@@ -13,17 +13,13 @@ idt_entry g_idt[256];
 idt_desc g_idt_desc;
 }
 
-namespace {
-
-void set_gate(int i, uint32_t off, uint8_t flags) {
+static void set_gate(int i, uint32_t off, uint8_t flags) {
 	g_idt[i].off_lo = (uint16_t)(off & 0xFFFF);
 	g_idt[i].sel = 0x08; // kernel code segment
 	g_idt[i].zero = 0;
 	g_idt[i].flags = flags;
 	g_idt[i].off_hi = (uint16_t)(off >> 16);
 }
-
-} // namespace
 
 void idt_init() {
 	for (int i = 0; i < 256; ++i) {

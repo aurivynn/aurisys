@@ -1,20 +1,14 @@
 #include "drivers/kbd.h"
 
+#include "arch/io.h"
 #include "arch/isr.h"
 #include "drivers/pic.h"
 #include "task.h"
 
 #include <stdint.h>
 
-namespace {
-inline uint8_t inb(uint16_t port) {
-	uint8_t val;
-	asm volatile("inb %1, %0" : "=a"(val) : "Nd"(port));
-	return val;
-}
-
 // scancode set 1 -> ascii. 0 = key we ignore.
-const char kScan[96] = {
+static const char kScan[96] = {
 	0,	  0,   '1', '2',  '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', 0,	 0,	  'q', 'w', 'e', 'r',
 	't',  'y', 'u', 'i',  'o', 'p', '[', ']', 0,   0,	'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', ';',
 	'\'', '`', 0,	'\\', 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '/', 0,	 '*', 0,   ' ', 0,	 0,
@@ -22,7 +16,7 @@ const char kScan[96] = {
 	0,	  0,   0,	0,	  0,   0,	0,	 0,	  0,   0,	0,	 0,	  0,   0,	0,	 0,
 };
 
-const char kShift[96] = {
+static const char kShift[96] = {
 	0,	 0,	  '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '_', '+', 0,   0,	'Q', 'W', 'E', 'R',
 	'T', 'Y', 'U', 'I', 'O', 'P', '{', '}', 0,	 0,	  'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', ':',
 	'"', '~', 0,   '|', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', '<', '>', '?', 0,   '*', 0,	 ' ', 0,   0,
@@ -30,13 +24,13 @@ const char kShift[96] = {
 	0,	 0,	  0,   0,	0,	 0,	  0,   0,	0,	 0,	  0,   0,	0,	 0,	  0,   0,
 };
 
-const int kBuf = 128;
-volatile uint8_t g_buf[kBuf];
-volatile int g_head = 0;
-volatile int g_tail = 0;
+static const int kBuf = 128;
+static volatile uint8_t g_buf[kBuf];
+static volatile int g_head = 0;
+static volatile int g_tail = 0;
 
-void irq_handler(Registers*) {
-	const uint8_t sc = inb(0x60);
+static void irq_handler(Registers*) {
+	const uint8_t sc = io::inb(0x60);
 	const int next = (g_head + 1) % kBuf;
 	if (next != g_tail) { // not full
 		g_buf[g_head] = sc;
@@ -47,10 +41,9 @@ void irq_handler(Registers*) {
 }
 
 // 0x0E backspace, 0x1C enter, 0x1D ctrl, 0x2A/0x36 shift
-bool g_shift = false;
-bool g_ctrl = false;
-bool g_ext = false;
-} // namespace
+static bool g_shift = false;
+static bool g_ctrl = false;
+static bool g_ext = false;
 
 int key_of(uint8_t sc) {
 	switch (sc) {
@@ -171,14 +164,10 @@ int poll() {
 	return c;
 }
 
-namespace {
-
 // A pending escape sequence
-char g_seq[8];
-int g_seqn;
-int g_seqout;
-
-} // namespace
+static char g_seq[8];
+static int g_seqn;
+static int g_seqout;
 
 int poll_char() {
 	// finish handing back a sequence that is part delivered

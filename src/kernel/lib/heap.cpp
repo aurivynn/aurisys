@@ -6,21 +6,19 @@
 
 extern "C" char __kernel_end;
 
-namespace {
-
-constexpr uint32_t kAlign = 16;
-constexpr uint32_t kMinBlock = 32;
-constexpr uint32_t kPage = 4096;
+static constexpr uint32_t kAlign = 16;
+static constexpr uint32_t kMinBlock = 32;
+static constexpr uint32_t kPage = 4096;
 
 // size packs three things into one word:
 //   bit 31  magic, set on every header we own. lets a free spot a pointer
 //           that is not ours instead of corrupting the list
 //   bit 0   in use
 //   bits 1-30  the real size, header included
-constexpr uint32_t kMagic = 0x80000000u;
-constexpr uint32_t kInUse = 0x1u;
-constexpr uint32_t kSizeMask = ~(kMagic | kInUse);
-constexpr uint32_t kSizeMax = kSizeMask >> 1;
+static constexpr uint32_t kMagic = 0x80000000u;
+static constexpr uint32_t kInUse = 0x1u;
+static constexpr uint32_t kSizeMask = ~(kMagic | kInUse);
+static constexpr uint32_t kSizeMax = kSizeMask >> 1;
 
 struct block {
 	uint32_t size;		// packed as above
@@ -31,26 +29,26 @@ struct block {
 
 static_assert(sizeof(block) == kAlign, "header must be exactly one align unit to keep payloads aligned");
 
-uint32_t g_start = 0;
-uint32_t g_end = 0;
-block* g_head = nullptr; // every block in address order, used and free alike
+static uint32_t g_start = 0;
+static uint32_t g_end = 0;
+static block* g_head = nullptr; // every block in address order, used and free alike
 
-size_t g_allocs = 0;
-size_t g_frees = 0;
-size_t g_coalesced = 0;
-size_t g_frames = 0;
+static size_t g_allocs = 0;
+static size_t g_frees = 0;
+static size_t g_coalesced = 0;
+static size_t g_frames = 0;
 
-inline uint32_t align_up(uint32_t v, uint32_t a) { return (v + a - 1u) & ~(a - 1u); }
-inline uint32_t align_down(uint32_t v, uint32_t a) { return v & ~(a - 1u); }
+static inline uint32_t align_up(uint32_t v, uint32_t a) { return (v + a - 1u) & ~(a - 1u); }
+static inline uint32_t align_down(uint32_t v, uint32_t a) { return v & ~(a - 1u); }
 
-inline uint32_t bsize(const block* b) { return b->size & kSizeMask; }
-inline bool in_use(const block* b) { return (b->size & kInUse) != 0; }
-inline bool ours(const block* b) { return (b->size & kMagic) != 0; }
+static inline uint32_t bsize(const block* b) { return b->size & kSizeMask; }
+static inline bool in_use(const block* b) { return (b->size & kInUse) != 0; }
+static inline bool ours(const block* b) { return (b->size & kMagic) != 0; }
 
-inline void mark(block* b, bool used) { b->size = bsize(b) | kMagic | (used ? kInUse : 0u); }
+static inline void mark(block* b, bool used) { b->size = bsize(b) | kMagic | (used ? kInUse : 0u); }
 
 // carve b down to `bytes`
-block* split(block* b, uint32_t bytes) {
+static block* split(block* b, uint32_t bytes) {
 	const uint32_t total = bsize(b);
 	if (total < bytes || total - bytes < kMinBlock)
 		return nullptr;
@@ -68,14 +66,12 @@ block* split(block* b, uint32_t bytes) {
 	return tail;
 }
 
-block* find_fit(uint32_t bytes) {
+static block* find_fit(uint32_t bytes) {
 	for (block* b = g_head; b; b = b->next)
 		if (!in_use(b) && bsize(b) >= bytes)
 			return b;
 	return nullptr;
 }
-
-} // namespace
 
 void heap_init(const bootinfo* bi) {
 	g_start = align_up((uint32_t)&__kernel_end, kAlign);

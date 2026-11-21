@@ -17,8 +17,6 @@
 
 namespace procfs {
 
-namespace {
-
 enum kind : uint32_t {
 	kRoot = 1,
 	kPidDir,
@@ -31,8 +29,8 @@ enum kind : uint32_t {
 	kFdLink,
 };
 
-constexpr uint32_t kVirtual = 0x80000000u;
-constexpr uint32_t kFiles = 6;
+static constexpr uint32_t kVirtual = 0x80000000u;
+static constexpr uint32_t kFiles = 6;
 
 struct tag {
 	kind k() const { return (kind)n.pad2; }
@@ -42,26 +40,26 @@ struct tag {
 };
 
 // the directories are fixed, one per process, so they are static and always the same node for the same pid.
-vfs::node g_root;
-tag g_pids[task::kMaxTask];
-tag g_fddirs[task::kMaxTask];
-constexpr uint32_t kRing = 8;
-tag g_ring[kRing];
-uint32_t g_ring_at = 0;
+static vfs::node g_root;
+static tag g_pids[task::kMaxTask];
+static tag g_fddirs[task::kMaxTask];
+static constexpr uint32_t kRing = 8;
+static tag g_ring[kRing];
+static uint32_t g_ring_at = 0;
 
-const struct {
+static const struct {
 	const char* name;
 	kind k;
 } kEntries[kFiles] = {
 	{"cmdline", kCmdline}, {"cwd", kCwd}, {"fd", kFdDir}, {"maps", kMaps}, {"stat", kStat}, {"status", kStatus},
 };
 
-task::task* by_pid(uint32_t pid) {
+static task::task* by_pid(uint32_t pid) {
 	task::task* t = task::by_pid(pid);
 	return (t && t->state != task::kFree) ? t : nullptr;
 }
 
-task::task* nth(uint32_t index) {
+static task::task* nth(uint32_t index) {
 	uint32_t seen = 0;
 	for (int i = 0; i < task::kMaxTask; ++i) {
 		task::task* t = &task::g_tasks[i];
@@ -75,7 +73,7 @@ task::task* nth(uint32_t index) {
 }
 
 // a pid or an fd number as text
-void num_to_str(char* out, uint32_t v) {
+static void num_to_str(char* out, uint32_t v) {
 	char d[16];
 	uint32_t r = 0;
 	do {
@@ -90,7 +88,7 @@ void num_to_str(char* out, uint32_t v) {
 	out[i] = 0;
 }
 
-int parse(const char* s) {
+static int parse(const char* s) {
 	if (!s || *s < '0' || *s > '9')
 		return -1;
 	int v = 0;
@@ -110,12 +108,12 @@ struct sink {
 	uint32_t off;
 };
 
-__attribute__((noinline)) void put(sink& s, const char* t) {
+static __attribute__((noinline)) void put(sink& s, const char* t) {
 	for (uint32_t i = 0; t[i] && s.n < s.len; ++i)
 		s.buf[s.n++] = t[i];
 }
 
-__attribute__((noinline)) void num(sink& s, uint32_t v) {
+static __attribute__((noinline)) void num(sink& s, uint32_t v) {
 	char d[16];
 	uint32_t r = 0;
 	do {
@@ -126,12 +124,12 @@ __attribute__((noinline)) void num(sink& s, uint32_t v) {
 		s.buf[s.n++] = d[--r];
 }
 
-void field(sink& s, uint32_t v) {
+static void field(sink& s, uint32_t v) {
 	num(s, v);
 	put(s, " ");
 }
 
-__attribute__((noinline)) int finish(sink& s) {
+static __attribute__((noinline)) int finish(sink& s) {
 	if (s.off >= s.n)
 		return 0;
 	const uint32_t left = s.n - s.off;
@@ -140,7 +138,7 @@ __attribute__((noinline)) int finish(sink& s) {
 	return (int)give;
 }
 
-uint32_t open_fds(const task::task* t) {
+static uint32_t open_fds(const task::task* t) {
 	uint32_t n = 0;
 	for (int i = 0; i < vfs::kMaxFd; ++i)
 		if (t->fd[i].n.type)
@@ -148,7 +146,7 @@ uint32_t open_fds(const task::task* t) {
 	return n;
 }
 
-__attribute__((noinline)) void fill_stat(const tag& g, sink& s) {
+static __attribute__((noinline)) void fill_stat(const tag& g, sink& s) {
 	task::task* t = by_pid(g.pid());
 	if (!t)
 		return;
@@ -166,7 +164,7 @@ __attribute__((noinline)) void fill_stat(const tag& g, sink& s) {
 	put(s, "\n");
 }
 
-__attribute__((noinline)) void fill_status(const tag& g, sink& s) {
+static __attribute__((noinline)) void fill_status(const tag& g, sink& s) {
 	task::task* t = by_pid(g.pid());
 	if (!t)
 		return;
@@ -193,7 +191,7 @@ __attribute__((noinline)) void fill_status(const tag& g, sink& s) {
 	put(s, "\n");
 }
 
-__attribute__((noinline)) void fill_cmdline(const tag& g, sink& s) {
+static __attribute__((noinline)) void fill_cmdline(const tag& g, sink& s) {
 	task::task* t = by_pid(g.pid());
 	if (!t)
 		return;
@@ -203,7 +201,7 @@ __attribute__((noinline)) void fill_cmdline(const tag& g, sink& s) {
 		s.buf[s.n++] = 0;
 }
 
-__attribute__((noinline)) void fill_cwd(const tag& g, sink& s) {
+static __attribute__((noinline)) void fill_cwd(const tag& g, sink& s) {
 	task::task* t = by_pid(g.pid());
 	if (!t)
 		return;
@@ -212,13 +210,13 @@ __attribute__((noinline)) void fill_cwd(const tag& g, sink& s) {
 	put(s, "\n");
 }
 
-__attribute__((noinline)) void fill_maps(const tag&, sink& s) {
+static __attribute__((noinline)) void fill_maps(const tag&, sink& s) {
 	put(s, "40000000-4003ffff r-xp 00000000 00:00 0                  code\n");
 	put(s, "40100000-4010ffff rw-p 00000000 00:00 0                  stack\n");
 	put(s, "40200000-402fffff rw-p 00000000 00:00 0                  arena\n");
 }
 
-__attribute__((noinline)) void fill_fd(const tag& g, sink& s) {
+static __attribute__((noinline)) void fill_fd(const tag& g, sink& s) {
 	task::task* t = by_pid(g.pid());
 	if (!t || g.fd() >= vfs::kMaxFd || t->fd[g.fd()].n.type == 0) {
 		put(s, "gone\n");
@@ -230,7 +228,7 @@ __attribute__((noinline)) void fill_fd(const tag& g, sink& s) {
 	put(s, "\n");
 }
 
-int read_file(vfs::node* n, void* buf, uint32_t off, uint32_t len) {
+static int read_file(vfs::node* n, void* buf, uint32_t off, uint32_t len) {
 	if (!n || !buf || len == 0)
 		return 0;
 	const tag& g = *reinterpret_cast<tag*>(n);
@@ -262,7 +260,7 @@ int read_file(vfs::node* n, void* buf, uint32_t off, uint32_t len) {
 
 // building nodes
 
-void dress(tag& g, vfs::node* parent, const char* name, kind k, uint32_t pid, uint32_t fd) {
+static void dress(tag& g, vfs::node* parent, const char* name, kind k, uint32_t pid, uint32_t fd) {
 	vfs::node* n = &g.n;
 	memset(n, 0, sizeof *n);
 	n->name = n->name_buf;
@@ -283,7 +281,7 @@ void dress(tag& g, vfs::node* parent, const char* name, kind k, uint32_t pid, ui
 		n->read = read_file;
 }
 
-tag* leaf(vfs::node* parent, const char* name, kind k, uint32_t pid, uint32_t fd) {
+static tag* leaf(vfs::node* parent, const char* name, kind k, uint32_t pid, uint32_t fd) {
 	tag* g = &g_ring[g_ring_at];
 	g_ring_at = (g_ring_at + 1) % kRing;
 	dress(*g, parent, name, k, pid, fd);
@@ -291,24 +289,24 @@ tag* leaf(vfs::node* parent, const char* name, kind k, uint32_t pid, uint32_t fd
 }
 
 // the directories refer to each other so they are all named up front
-int readdir_pid(vfs::node* n, uint32_t index, vfs::node* out);
-int readdir_fd(vfs::node* n, uint32_t index, vfs::node* out);
-vfs::node* find_pid(vfs::node* n, const char* name);
-vfs::node* find_fd(vfs::node* n, const char* name);
+static int readdir_pid(vfs::node* n, uint32_t index, vfs::node* out);
+static int readdir_fd(vfs::node* n, uint32_t index, vfs::node* out);
+static vfs::node* find_pid(vfs::node* n, const char* name);
+static vfs::node* find_fd(vfs::node* n, const char* name);
 
-void attach_dir(tag& g, const char* name, uint32_t pid) {
+static void attach_dir(tag& g, const char* name, uint32_t pid) {
 	dress(g, &g_root, name, kPidDir, pid, 0);
 	g.n.readdir = readdir_pid;
 	g.n.find_child = find_pid;
 }
 
-void attach_fddir(tag& g, uint32_t pid) {
+static void attach_fddir(tag& g, uint32_t pid) {
 	dress(g, &g_pids[pid - 1].n, "fd", kFdDir, pid, 0);
 	g.n.readdir = readdir_fd;
 	g.n.find_child = find_fd;
 }
 
-int readdir_proc(vfs::node*, uint32_t index, vfs::node* out) {
+static int readdir_proc(vfs::node*, uint32_t index, vfs::node* out) {
 	task::task* t = nth(index);
 	if (!t)
 		return -1;
@@ -323,7 +321,7 @@ int readdir_proc(vfs::node*, uint32_t index, vfs::node* out) {
 	return 0;
 }
 
-vfs::node* find_proc(vfs::node*, const char* name) {
+static vfs::node* find_proc(vfs::node*, const char* name) {
 	const int pid = parse(name);
 	if (pid < 1 || pid > task::kMaxTask || !by_pid((uint32_t)pid))
 		return nullptr;
@@ -332,7 +330,7 @@ vfs::node* find_proc(vfs::node*, const char* name) {
 	return &g_pids[pid - 1].n;
 }
 
-int readdir_pid(vfs::node* n, uint32_t index, vfs::node* out) {
+static int readdir_pid(vfs::node* n, uint32_t index, vfs::node* out) {
 	if (index >= kFiles)
 		return -1;
 	const uint32_t pid = reinterpret_cast<tag*>(n)->pid();
@@ -349,7 +347,7 @@ int readdir_pid(vfs::node* n, uint32_t index, vfs::node* out) {
 	return 0;
 }
 
-vfs::node* find_pid(vfs::node* n, const char* name) {
+static vfs::node* find_pid(vfs::node* n, const char* name) {
 	const uint32_t pid = reinterpret_cast<tag*>(n)->pid();
 	for (uint32_t i = 0; i < kFiles; ++i) {
 		if (strcmp(name, kEntries[i].name) != 0)
@@ -364,7 +362,7 @@ vfs::node* find_pid(vfs::node* n, const char* name) {
 	return nullptr;
 }
 
-int readdir_fd(vfs::node* n, uint32_t index, vfs::node* out) {
+static int readdir_fd(vfs::node* n, uint32_t index, vfs::node* out) {
 	const tag& self = *reinterpret_cast<tag*>(n);
 	task::task* t = by_pid(self.pid());
 	if (!t)
@@ -387,7 +385,7 @@ int readdir_fd(vfs::node* n, uint32_t index, vfs::node* out) {
 	return -1;
 }
 
-vfs::node* find_fd(vfs::node* n, const char* name) {
+static vfs::node* find_fd(vfs::node* n, const char* name) {
 	const tag& self = *reinterpret_cast<tag*>(n);
 	const int fd = parse(name);
 	task::task* t = by_pid(self.pid());
@@ -395,8 +393,6 @@ vfs::node* find_fd(vfs::node* n, const char* name) {
 		return nullptr;
 	return &leaf(n, name, kFdLink, self.pid(), (uint32_t)fd)->n;
 }
-
-} // namespace
 
 void init() {
 	g_ring_at = 0;

@@ -1,5 +1,6 @@
 #include "drivers/timer.h"
 
+#include "arch/io.h"
 #include "arch/isr.h"
 #include "drivers/pic.h"
 #include "drivers/rtc.h"
@@ -7,25 +8,19 @@
 
 #include <stdint.h>
 
-namespace {
-inline void outb(uint16_t port, uint8_t val) { asm volatile("outb %0, %1" : : "a"(val), "Nd"(port)); }
+static const uint16_t kReload = 1193;
 
-const uint16_t kReload = 1193;
+static volatile uint64_t g_ticks = 0;
 
-volatile uint64_t g_ticks = 0;
-
-void tick(Registers*) { ++g_ticks; }
-} // namespace
+static void tick(Registers*) { ++g_ticks; }
 
 constexpr uint32_t kPitHz = 1193182u;
 constexpr uint32_t kTickThousandths = (uint32_t)(((uint64_t)kReload * 1000000u + kPitHz / 2u) / kPitHz);
 
 namespace time {
 
-namespace {
-uint32_t g_unix_base = 0;
-uint32_t g_unix_anchor = 0;
-} // namespace
+static uint32_t g_unix_base = 0;
+static uint32_t g_unix_anchor = 0;
 
 // ticks to milliseconds
 uint32_t ms() {
@@ -55,9 +50,9 @@ uint32_t ticks_for_ms(uint32_t ms) {
 }
 
 void timer_init() {
-	outb(0x43, 0x34); // ch0, mode 2 (rate gen), lobyte/hibyte
-	outb(0x40, kReload & 0xFF);
-	outb(0x40, kReload >> 8);
+	io::outb(0x43, 0x34); // ch0, mode 2 (rate gen), lobyte/hibyte
+	io::outb(0x40, kReload & 0xFF);
+	io::outb(0x40, kReload >> 8);
 	irq_install(0, tick);
 	pic::unmask(0);
 }

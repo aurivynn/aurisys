@@ -7,8 +7,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-namespace {
-
 // i386 tss layout, the cpu reads esp0/ss0 when a ring3 trap fires. it also writes the interrupted context into the tss,
 // so the fields past ebx have to sit exactly where the cpu expects them or the old cs and ss end up in the wrong place
 struct Tss {
@@ -28,10 +26,10 @@ static_assert(offsetof(Tss, cs) == 68, "the cpu writes the old cs here");
 static_assert(offsetof(Tss, ss) == 72, "the cpu writes the old ss here");
 static_assert(sizeof(Tss) == 96, "a 32 bit tss with no iomap is 96 bytes");
 
-Tss g_tss __attribute__((section(".paging"))) = {};
+static Tss g_tss __attribute__((section(".paging"))) = {};
 
 // the ring0 stack traps run on, esp0 points at the top
-uint8_t g_sys_stack[16384] __attribute__((section(".paging"), aligned(16))) = {};
+static uint8_t g_sys_stack[16384] __attribute__((section(".paging"), aligned(16))) = {};
 
 struct Saw {
 	uint16_t limit_lo;
@@ -43,7 +41,7 @@ struct Saw {
 };
 
 // flat 4g 32bit segment, dpl + code/data from the args
-Saw flat_sel(int dpl, bool code) {
+static Saw flat_sel(int dpl, bool code) {
 	Saw s = {};
 	s.limit_lo = 0xFFFF;
 	s.gran = 0xCF; // g=1 db=1 so the limit means 4g in pages
@@ -51,7 +49,7 @@ Saw flat_sel(int dpl, bool code) {
 	return s;
 }
 
-Saw tss_sel(const Tss& t) {
+static Saw tss_sel(const Tss& t) {
 	Saw s = {};
 	const uint32_t base = (uint32_t)(uintptr_t)&t;
 	s.limit_lo = (uint16_t)(sizeof(Tss) - 1);
@@ -62,9 +60,7 @@ Saw tss_sel(const Tss& t) {
 	return s;
 }
 
-Saw g_gdt[6] __attribute__((section(".paging"))) = {};
-
-} // namespace
+static Saw g_gdt[6] __attribute__((section(".paging"))) = {};
 
 void gdt_init() {
 	// .paging is not cleared at boot so zero the tss

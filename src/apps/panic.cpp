@@ -3,6 +3,6 @@
 int main(int argc, char** argv) {
 	(void)argc;
 	(void)argv;
-	asm volatile("int $0x80" ::"a"((uint32_t)SYS_panic) : "memory");
+	sys_call(SYS_panic);
 	return 0;
 }

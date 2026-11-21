@@ -10,18 +10,17 @@
 // The kernels console, and nothing else.
 namespace terminal {
 
-namespace {
-constexpr int kPutMax = 1024;
-char g_put[kPutMax];
-int g_putn;
+static constexpr int kPutMax = 1024;
+static char g_put[kPutMax];
+static int g_putn;
 
-void flush() {
+static void flush() {
 	if (g_putn > 0)
 		vfs::fd_write(1, g_put, (uint32_t)g_putn);
 	g_putn = 0;
 }
 
-void put(char c) {
+static void put(char c) {
 	if (g_putn >= kPutMax)
 		flush();
 	g_put[g_putn++] = c;
@@ -29,8 +28,6 @@ void put(char c) {
 	if (c == '\n')
 		flush();
 }
-
-} // namespace
 
 void printf(const char* fmt, ...) {
 	va_list ap;

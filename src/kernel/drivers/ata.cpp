@@ -1,42 +1,29 @@
 #include "drivers/ata.h"
 
+#include "arch/io.h"
+
 #include <stdint.h>
 
-namespace {
+static constexpr uint16_t kBase = 0x1F0; // primary controller
+static constexpr uint8_t kData = 0;		 // 16bit data port
+static constexpr uint8_t kSectorCount = 2;
+static constexpr uint8_t kLbaLow = 3;
+static constexpr uint8_t kLbaMid = 4;
+static constexpr uint8_t kLbaHigh = 5;
+static constexpr uint8_t kDriveHead = 6;
+static constexpr uint8_t kCommand = 7; // out
+static constexpr uint8_t kStatus = 7;  // in
 
-inline void outb(uint16_t port, uint8_t val) { asm volatile("outb %0, %1" : : "a"(val), "Nd"(port)); }
-inline uint8_t inb(uint16_t port) {
-	uint8_t val;
-	asm volatile("inb %1, %0" : "=a"(val) : "Nd"(port));
-	return val;
-}
-inline void outw(uint16_t port, uint16_t val) { asm volatile("outw %0, %1" : : "a"(val), "Nd"(port)); }
-inline uint16_t inw(uint16_t port) {
-	uint16_t val;
-	asm volatile("inw %1, %0" : "=a"(val) : "Nd"(port));
-	return val;
-}
+static constexpr uint8_t kStBsy = 0x80;
+static constexpr uint8_t kStDrq = 0x08; // data transfer requested
+static constexpr uint8_t kStErr = 0x01;
 
-constexpr uint16_t kBase = 0x1F0; // primary controller
-constexpr uint8_t kData = 0;	  // 16bit data port
-constexpr uint8_t kSectorCount = 2;
-constexpr uint8_t kLbaLow = 3;
-constexpr uint8_t kLbaMid = 4;
-constexpr uint8_t kLbaHigh = 5;
-constexpr uint8_t kDriveHead = 6;
-constexpr uint8_t kCommand = 7; // out
-constexpr uint8_t kStatus = 7;	// in
-
-constexpr uint8_t kStBsy = 0x80;
-constexpr uint8_t kStDrq = 0x08; // data transfer requested
-constexpr uint8_t kStErr = 0x01;
-
-constexpr uint32_t kTimeout = 30000000;
+static constexpr uint32_t kTimeout = 30000000;
 
 // wait until the drive is not busy
-bool wait_idle() {
+static bool wait_idle() {
 	for (uint32_t i = 0; i < kTimeout; ++i) {
-		const uint8_t st = inb(kBase + kStatus);
+		const uint8_t st = io::inb(kBase + kStatus);
 		if (st & kStErr)
 			return false;
 		if (!(st & kStBsy))
@@ -46,9 +33,9 @@ bool wait_idle() {
 }
 
 // wait until data requested
-bool wait_drq() {
+static bool wait_drq() {
 	for (uint32_t i = 0; i < kTimeout; ++i) {
-		const uint8_t st = inb(kBase + kStatus);
+		const uint8_t st = io::inb(kBase + kStatus);
 		if ((st & (kStErr | kStBsy)) == kStErr)
 			return false;
 		if (st & kStDrq)
@@ -59,39 +46,37 @@ bool wait_drq() {
 	return false;
 }
 
-void write_lba(uint32_t lba, uint8_t count) {
-	outb(kBase + kSectorCount, count);
-	outb(kBase + kLbaLow, (uint8_t)lba);
-	outb(kBase + kLbaMid, (uint8_t)(lba >> 8));
-	outb(kBase + kLbaHigh, (uint8_t)(lba >> 16));
-	outb(kBase + kDriveHead, (uint8_t)(0xE0 | ((lba >> 24) & 0x0F))); // lba mode + master
+static void write_lba(uint32_t lba, uint8_t count) {
+	io::outb(kBase + kSectorCount, count);
+	io::outb(kBase + kLbaLow, (uint8_t)lba);
+	io::outb(kBase + kLbaMid, (uint8_t)(lba >> 8));
+	io::outb(kBase + kLbaHigh, (uint8_t)(lba >> 16));
+	io::outb(kBase + kDriveHead, (uint8_t)(0xE0 | ((lba >> 24) & 0x0F))); // lba mode + master
 }
 
 // read the data register into a byte buffer 256 words per sector
-void read_data(void* dst, int words) {
+static void read_data(void* dst, int words) {
 	uint16_t* p = (uint16_t*)dst;
 	for (int i = 0; i < words; ++i)
-		p[i] = inw(kBase + kData);
+		p[i] = io::inw(kBase + kData);
 }
 
-void write_data(const void* src, int words) {
+static void write_data(const void* src, int words) {
 	const uint16_t* p = (const uint16_t*)src;
 	for (int i = 0; i < words; ++i)
-		outw(kBase + kData, p[i]);
+		io::outw(kBase + kData, p[i]);
 }
-
-} // namespace
 
 namespace ata {
 
 uint32_t sector_count;
 
 bool init() {
-	outb(kBase + kDriveHead, 0xA0); // select master, no lba yet
+	io::outb(kBase + kDriveHead, 0xA0); // select master, no lba yet
 	if (!wait_idle())
 		return false;
 
-	outb(kBase + kCommand, 0xEC); // identify
+	io::outb(kBase + kCommand, 0xEC); // identify
 	if (!wait_drq())
 		return false;
 
@@ -114,7 +99,7 @@ bool read_sector(uint32_t lba, void* dst) {
 	if (lba >= sector_count)
 		return false;
 	write_lba(lba, 1);
-	outb(kBase + kCommand, 0x20); // read sectors
+	io::outb(kBase + kCommand, 0x20); // read sectors
 	if (!wait_drq())
 		return false;
 	read_data(dst, 256);
@@ -125,7 +110,7 @@ bool write_sector(uint32_t lba, const void* src) {
 	if (lba >= sector_count)
 		return false;
 	write_lba(lba, 1);
-	outb(kBase + kCommand, 0x30); // write sectors
+	io::outb(kBase + kCommand, 0x30); // write sectors
 	if (!wait_drq())
 		return false;
 	write_data(src, 256);

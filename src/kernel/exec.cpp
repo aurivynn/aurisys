@@ -19,15 +19,13 @@
 
 namespace exec {
 
-namespace {
-
 using task::kAppBase;
 using task::kArenaVA;
 using task::kCodeBytes;
 using task::kStackBase;
 using task::kStackBytes;
 
-constexpr uint32_t kArenaBase = kArenaVA; // where brk() grows, its own 2m slot
+static constexpr uint32_t kArenaBase = kArenaVA; // where brk() grows, its own 2m slot
 
 struct elfhdr {
 	uint8_t ident[16];
@@ -42,11 +40,11 @@ struct phdr {
 	uint32_t type, offset, vaddr, paddr, filesz, memsz, flags, align;
 };
 
-constexpr uint32_t kPtLoad = 1;
-constexpr uint16_t kEtExec = 2;
-constexpr uint16_t kEm386 = 3;
+static constexpr uint32_t kPtLoad = 1;
+static constexpr uint16_t kEtExec = 2;
+static constexpr uint16_t kEm386 = 3;
 
-bool elf_ok(const elfhdr& eh) {
+static bool elf_ok(const elfhdr& eh) {
 	return eh.ident[0] == 0x7F && eh.ident[1] == 'E' && eh.ident[2] == 'L' && eh.ident[3] == 'F' && eh.ident[4] == 1 &&
 		   eh.ident[5] == 1 && // 32 le
 		   eh.type == kEtExec && eh.machine == kEm386;
@@ -54,7 +52,7 @@ bool elf_ok(const elfhdr& eh) {
 
 // build the cdecl entry stack the apps crt0 expects: argc, then the argv pointers, then the strings themselves at the
 // top
-uint32_t build_stack(const char* flat) {
+static uint32_t build_stack(const char* flat) {
 	const int arglen = ((const int*)flat)[0];
 	const int envc = ((const int*)flat)[1];
 	const char* p = flat + 8;
@@ -113,9 +111,9 @@ uint32_t build_stack(const char* flat) {
 	return sp;
 }
 
-constexpr int kCopyArg = 16;
-constexpr int kCopyEnv = 32;
-constexpr int kCopyStr = 192;
+static constexpr int kCopyArg = 16;
+static constexpr int kCopyEnv = 32;
+static constexpr int kCopyStr = 192;
 
 static char g_flat[8 + (kCopyArg + kCopyEnv) * kCopyStr];
 
@@ -143,7 +141,7 @@ static bool copy_args(const char* const* av, int argc, const char* const* ev, in
 }
 
 // give the process its own view of the code, the stack and the arena
-bool map_image(task::task* t) {
+static bool map_image(task::task* t) {
 	for (uint32_t i = 0; i < kCodeBytes / 4096; ++i) {
 		const uint32_t va = kAppBase + i * 4096;
 		const uint32_t pa = (uint32_t)t->code_base + i * 4096;
@@ -165,8 +163,6 @@ bool map_image(task::task* t) {
 	}
 	return true;
 }
-
-} // namespace
 
 // read the elf, build the process, leave it runnable. returns its pid or 0
 static bool load_into(task::task* t, const char* path, int argc, const char* const* argv, int envc,

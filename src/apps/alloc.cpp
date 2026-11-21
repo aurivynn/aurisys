@@ -1,20 +1,9 @@
 // the userspace allocator
 #include "lib/alloc.h"
 
-#include "syscall.h"
+#include "lib.h"
 
 #include <stdint.h>
-
-extern "C" void* memset(void* dst, int c, size_t n);
-
-// the gate itself
-static int gate(uint32_t num, uint32_t a) {
-	int out;
-	asm volatile("int $0x80" : "=a"(out) : "a"(num), "b"(a) : "memory");
-	return out;
-}
-
-namespace {
 
 using alloc::align_up;
 using alloc::Block;
@@ -23,11 +12,11 @@ using alloc::kAlign;
 using alloc::kMinBlock;
 using alloc::payload_of;
 
-uint8_t* g_next = nullptr; // next byte never handed out
-uint8_t* g_end = nullptr;  // one past the last byte we own
-Block* g_free = nullptr;   // returned blocks threaded by alloc::Block::next
+static uint8_t* g_next = nullptr; // next byte never handed out
+static uint8_t* g_end = nullptr;  // one past the last byte we own
+static Block* g_free = nullptr;	  // returned blocks threaded by alloc::Block::next
 
-void release_tail() {
+static void release_tail() {
 	const uint32_t left = (uint32_t)(g_end - g_next);
 	if (left < kMinBlock)
 		return;
@@ -39,18 +28,18 @@ void release_tail() {
 }
 
 // take `bytes` from the arena
-uint8_t* carve(uint32_t bytes) {
+static uint8_t* carve(uint32_t bytes) {
 	if ((uint32_t)(g_end - g_next) >= bytes) {
 		uint8_t* p = g_next;
 		g_next += bytes;
 		return p;
 	}
-	const uint32_t before = (uint32_t)gate(SYS_sbrk, 0);
+	const uint32_t before = sys_call(SYS_sbrk);
 	if (before == 0)
 		return nullptr;
 	// a page multiple with room to spare, so the next few allocations do not each cost a syscall
 	const uint32_t want = align_up(bytes, 4096u) + 4096u;
-	const uint32_t got = (uint32_t)gate(SYS_sbrk, (uint32_t)(int32_t)want);
+	const uint32_t got = sys_call(SYS_sbrk, (uint32_t)(int32_t)want);
 	if (got == 0)
 		return nullptr;					// the arena ceiling
 	const uint32_t have = got - before; // what actually arrived
@@ -66,8 +55,6 @@ uint8_t* carve(uint32_t bytes) {
 	release_tail();
 	return nullptr;
 }
-
-} // namespace
 
 extern "C" void* malloc(size_t n) {
 	if (n == 0)

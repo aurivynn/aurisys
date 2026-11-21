@@ -12,6 +12,8 @@
 
 enum { kSeekSet = 0, kSeekCur = 1, kSeekEnd = 2 };
 
+uint32_t sys_call(uint32_t num, uint32_t a = 0, uint32_t b = 0, uint32_t c = 0, uint32_t d = 0, uint32_t e = 0);
+
 int open(const char* path, uint32_t flags);
 int read(int fd, void* buf, uint32_t len);
 int write(int fd, const void* buf, uint32_t len);

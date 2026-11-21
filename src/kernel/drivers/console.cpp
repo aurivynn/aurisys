@@ -7,21 +7,19 @@
 
 namespace console {
 
-namespace {
+static constexpr uint32_t kDefaultFg = 0xCDD6F4;
+static constexpr uint32_t kDefaultBg = 0x1E1E2E;
 
-constexpr uint32_t kDefaultFg = 0xCDD6F4;
-constexpr uint32_t kDefaultBg = 0x1E1E2E;
+static const uint32_t kAnsi[8] = {0x1E1E2E, 0xF38BA8, 0xA6E3A1, 0xF9E2AF, 0x89B4FA, 0xCBA6F7, 0x94E2D5, 0xCDD6F4};
+static const uint32_t kAnsiBright[8] = {0x45475A, 0xF38BA8, 0xA6E3A1, 0xF9E2AF, 0x89B4FA, 0xCBA6F7, 0x94E2D5, 0xFFFFFF};
 
-const uint32_t kAnsi[8] = {0x1E1E2E, 0xF38BA8, 0xA6E3A1, 0xF9E2AF, 0x89B4FA, 0xCBA6F7, 0x94E2D5, 0xCDD6F4};
-const uint32_t kAnsiBright[8] = {0x45475A, 0xF38BA8, 0xA6E3A1, 0xF9E2AF, 0x89B4FA, 0xCBA6F7, 0x94E2D5, 0xFFFFFF};
-
-uint32_t ansi_fg(int n, bool bright = false) {
+static uint32_t ansi_fg(int n, bool bright = false) {
 	if (n < 0 || n > 7)
 		return kDefaultFg;
 	return bright ? kAnsiBright[n] : kAnsi[n];
 }
 
-uint32_t lighten(uint32_t c) {
+static uint32_t lighten(uint32_t c) {
 	const uint32_t r = (c >> 16) & 0xFFu;
 	const uint32_t g = (c >> 8) & 0xFFu;
 	const uint32_t b = c & 0xFFu;
@@ -31,36 +29,36 @@ uint32_t lighten(uint32_t c) {
 	return (nr << 16) | (ng << 8) | nb;
 }
 
-uint32_t g_fg = kDefaultFg;
-uint32_t g_bg = kDefaultBg;
-int g_cx = 0; // cursor in cells
-int g_cy = 0;
+static uint32_t g_fg = kDefaultFg;
+static uint32_t g_bg = kDefaultBg;
+static int g_cx = 0; // cursor in cells
+static int g_cy = 0;
 
-int g_cur_x = -1; // the cell currently drawn as a cursor block
-int g_cur_y = -1;
-bool g_cursor_on = true;
+static int g_cur_x = -1; // the cell currently drawn as a cursor block
+static int g_cur_y = -1;
+static bool g_cursor_on = true;
 
-constexpr int kMaxCols = 200;
-constexpr int kMaxRows = 72;
-char g_ch[kMaxRows][kMaxCols];
-uint32_t g_fgc[kMaxRows][kMaxCols];
+static constexpr int kMaxCols = 200;
+static constexpr int kMaxRows = 72;
+static char g_ch[kMaxRows][kMaxCols];
+static uint32_t g_fgc[kMaxRows][kMaxCols];
 
 // how much of the screen has ever been written to
-int g_used = 1;
+static int g_used = 1;
 
-int cols() {
+static int cols() {
 	const int n = (int)(fb::width() / 8);
 	return n < kMaxCols ? n : kMaxCols;
 }
 
-int rows() {
+static int rows() {
 	const int n = (int)(fb::height() / 16);
 	return n < kMaxRows ? n : kMaxRows;
 }
 
-void emit(char c) { putchar(c); }
+static void emit(char c) { putchar(c); }
 
-int clampx(int x) {
+static int clampx(int x) {
 	if (x < 0)
 		x = 0;
 	if (x >= cols())
@@ -68,7 +66,7 @@ int clampx(int x) {
 	return x;
 }
 
-int clampy(int y) {
+static int clampy(int y) {
 	if (y < 0)
 		y = 0;
 	if (y >= rows())
@@ -76,13 +74,13 @@ int clampy(int y) {
 	return y;
 }
 
-void paint(int x, int y) {
+static void paint(int x, int y) {
 	fb::drawchar(x * 8, y * 16, g_ch[y][x], g_fgc[y][x], g_bg);
 	if (g_cursor_on && x == g_cx && y == g_cy)
 		fb::fill_rect(x * 8, y * 16 + 13, 8, 3, g_fg);
 }
 
-void blank_row(int y) {
+static void blank_row(int y) {
 	for (int x = 0; x < cols(); ++x) {
 		g_ch[y][x] = ' ';
 		g_fgc[y][x] = g_fg;
@@ -90,7 +88,7 @@ void blank_row(int y) {
 }
 
 // blank the part of the screen that has been used and no more
-void blank_all() {
+static void blank_all() {
 	int n = g_used;
 	if (n > rows())
 		n = rows();
@@ -99,7 +97,7 @@ void blank_all() {
 }
 
 // repaint the two cells the cursor is moving between and nothing else
-void repaint_cursor() {
+static void repaint_cursor() {
 	if (g_cur_x >= 0 && (g_cur_x != g_cx || g_cur_y != g_cy))
 		paint(g_cur_x, g_cur_y);
 	if (g_cursor_on) {
@@ -111,7 +109,7 @@ void repaint_cursor() {
 	}
 }
 
-void repaint_all() {
+static void repaint_all() {
 	int n = g_used;
 	if (n > rows())
 		n = rows();
@@ -120,13 +118,13 @@ void repaint_all() {
 			paint(x, y);
 }
 
-void move_to(int x, int y) {
+static void move_to(int x, int y) {
 	g_cx = clampx(x);
 	g_cy = clampy(y);
 	repaint_cursor();
 }
 
-void newline() {
+static void newline() {
 	g_cx = 0;
 	++g_cy;
 	if (g_cy >= rows()) {
@@ -147,13 +145,13 @@ void newline() {
 	repaint_cursor();
 }
 
-void erase_cell(int x, int y) {
+static void erase_cell(int x, int y) {
 	g_ch[y][x] = ' ';
 	g_fgc[y][x] = g_fg;
 	paint(x, y);
 }
 
-void erase_line(int how) {
+static void erase_line(int how) {
 	if (how == 1) {
 		for (int x = 0; x <= g_cx; ++x)
 			erase_cell(x, g_cy);
@@ -167,7 +165,7 @@ void erase_line(int how) {
 	repaint_cursor();
 }
 
-void erase_display(int how) {
+static void erase_display(int how) {
 	if (how == 2 || how == 3) {
 		blank_all();
 		g_used = 1;
@@ -201,21 +199,21 @@ void erase_display(int how) {
 // escape sequence handling
 enum { kPlain, kAfterEsc, kInCsi, kInOsc };
 
-int g_state = kPlain;
+static int g_state = kPlain;
 
-constexpr int kMaxParam = 8;
-int g_param[kMaxParam];
-int g_nparam;
-int g_pend;	 // a number being accumulated
-bool g_priv; // a private marker such as ? was seen
+static constexpr int kMaxParam = 8;
+static int g_param[kMaxParam];
+static int g_nparam;
+static int g_pend;	// a number being accumulated
+static bool g_priv; // a private marker such as ? was seen
 
-void csi_start() {
+static void csi_start() {
 	g_nparam = 0;
 	g_pend = 0;
 	g_priv = false;
 }
 
-void csi_push() {
+static void csi_push() {
 	if (g_nparam < kMaxParam)
 		g_param[g_nparam] = g_pend;
 	++g_nparam;
@@ -223,7 +221,7 @@ void csi_push() {
 	g_pend = 0;
 }
 
-void sgr() {
+static void sgr() {
 	if (g_nparam == 0) {
 		g_fg = kDefaultFg;
 		g_bg = kDefaultBg;
@@ -280,7 +278,7 @@ void sgr() {
 	}
 }
 
-void csi_dispatch(char final) {
+static void csi_dispatch(char final) {
 	const int a = g_param[0] ? g_param[0] : 1;
 	const int b = g_param[1] ? g_param[1] : 1;
 	switch (final) {
@@ -335,7 +333,7 @@ void csi_dispatch(char final) {
 	}
 }
 
-void escape(char c) {
+static void escape(char c) {
 	switch (g_state) {
 	case kAfterEsc:
 		if (c == '[') {
@@ -373,8 +371,6 @@ void escape(char c) {
 		break;
 	}
 }
-
-} // namespace
 
 void init() {
 	g_fg = kDefaultFg;

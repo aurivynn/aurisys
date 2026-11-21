@@ -9,39 +9,37 @@
 
 namespace fs {
 
-namespace {
+static constexpr uint32_t kSbMagic = 0xEF53;
+static constexpr uint32_t kMaxBlockSize = 4096;
+static constexpr uint16_t kExtMagic = 0xF30A;
+static constexpr uint32_t kExtentsFl = 0x80000;
+static constexpr int kMaxDepth = 4;
+static constexpr uint32_t kRootIno = 2;
 
-constexpr uint32_t kSbMagic = 0xEF53;
-constexpr uint32_t kMaxBlockSize = 4096;
-constexpr uint16_t kExtMagic = 0xF30A;
-constexpr uint32_t kExtentsFl = 0x80000;
-constexpr int kMaxDepth = 4;
-constexpr uint32_t kRootIno = 2;
+static bool g_mounted = false;
+static uint32_t g_part_lba;			 // partition start
+static uint32_t g_bs;				 // block size
+static uint32_t g_blocks;			 // s_blocks_count
+static uint32_t g_inodes;			 // s_inodes_count
+static uint32_t g_first_data;		 // s_first_data_block
+static uint32_t g_bpg;				 // s_blocks_per_group
+static uint32_t g_ipg;				 // s_inodes_per_group
+static uint32_t g_inode_size;		 // s_inode_size (256 here)
+static uint32_t g_ipb;				 // inodes per block
+static uint32_t g_desc_block;		 // block of the group descriptor table
+static uint32_t g_bbb, g_ibb, g_itb; // group 0
+static uint32_t g_free_blocks, g_free_inodes;
+static uint32_t g_feat_compat, g_feat_incompat, g_feat_ro;
 
-bool g_mounted = false;
-uint32_t g_part_lba;		  // partition start
-uint32_t g_bs;				  // block size
-uint32_t g_blocks;			  // s_blocks_count
-uint32_t g_inodes;			  // s_inodes_count
-uint32_t g_first_data;		  // s_first_data_block
-uint32_t g_bpg;				  // s_blocks_per_group
-uint32_t g_ipg;				  // s_inodes_per_group
-uint32_t g_inode_size;		  // s_inode_size (256 here)
-uint32_t g_ipb;				  // inodes per block
-uint32_t g_desc_block;		  // block of the group descriptor table
-uint32_t g_bbb, g_ibb, g_itb; // group 0
-uint32_t g_free_blocks, g_free_inodes;
-uint32_t g_feat_compat, g_feat_incompat, g_feat_ro;
-
-uint8_t g_sb[1024];			 // the superblock
-uint8_t g_b1[kMaxBlockSize]; // general block scratch
-uint8_t g_b2[kMaxBlockSize]; // dirent block scratch
-uint8_t g_ino[512];			 // the current inode image
-char g_name[256];			 // transient name handed to the dirent callback
+static uint8_t g_sb[1024];			// the superblock
+static uint8_t g_b1[kMaxBlockSize]; // general block scratch
+static uint8_t g_b2[kMaxBlockSize]; // dirent block scratch
+static uint8_t g_ino[512];			// the current inode image
+static char g_name[256];			// transient name handed to the dirent callback
 
 // block cache
-constexpr int kCacheSlots = 64;
-constexpr int kCacheBuckets = 64;
+static constexpr int kCacheSlots = 64;
+static constexpr int kCacheBuckets = 64;
 
 struct cache_slot {
 	uint32_t blk;
@@ -51,35 +49,35 @@ struct cache_slot {
 	uint8_t data[kMaxBlockSize];
 };
 
-cache_slot g_cache[kCacheSlots];
-int g_bucket[kCacheBuckets];
-int g_hand = 0;
+static cache_slot g_cache[kCacheSlots];
+static int g_bucket[kCacheBuckets];
+static int g_hand = 0;
 
-inline uint16_t r16(const uint8_t* p) { return (uint16_t)(p[0] | (uint16_t)p[1] << 8); }
-inline uint32_t r32(const uint8_t* p) {
+static inline uint16_t r16(const uint8_t* p) { return (uint16_t)(p[0] | (uint16_t)p[1] << 8); }
+static inline uint32_t r32(const uint8_t* p) {
 	return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
 }
-inline void w16(uint8_t* p, uint16_t v) {
+static inline void w16(uint8_t* p, uint16_t v) {
 	p[0] = (uint8_t)v;
 	p[1] = (uint8_t)(v >> 8);
 }
-inline void w32(uint8_t* p, uint32_t v) {
+static inline void w32(uint8_t* p, uint32_t v) {
 	p[0] = (uint8_t)v;
 	p[1] = (uint8_t)(v >> 8);
 	p[2] = (uint8_t)(v >> 16);
 	p[3] = (uint8_t)(v >> 24);
 }
 
-int cache_hash(uint32_t blk) { return (int)((blk * 2654435761u) % kCacheBuckets); }
+static int cache_hash(uint32_t blk) { return (int)((blk * 2654435761u) % kCacheBuckets); }
 
-cache_slot* cache_find(uint32_t blk) {
+static cache_slot* cache_find(uint32_t blk) {
 	for (int i = g_bucket[cache_hash(blk)]; i >= 0; i = g_cache[i].next)
 		if (g_cache[i].valid && g_cache[i].blk == blk)
 			return &g_cache[i];
 	return nullptr;
 }
 
-void cache_unlink(int i) {
+static void cache_unlink(int i) {
 	int* p = &g_bucket[cache_hash(g_cache[i].blk)];
 	while (*p >= 0) {
 		if (*p == i) {
@@ -91,7 +89,7 @@ void cache_unlink(int i) {
 }
 
 // the next slot to reuse
-int cache_victim() {
+static int cache_victim() {
 	for (;;) {
 		cache_slot& s = g_cache[g_hand];
 		const int i = g_hand;
@@ -106,7 +104,7 @@ int cache_victim() {
 	}
 }
 
-void cache_install(int i, uint32_t blk, const void* data) {
+static void cache_install(int i, uint32_t blk, const void* data) {
 	cache_slot& s = g_cache[i];
 	if (s.valid)
 		cache_unlink(i);
@@ -120,7 +118,7 @@ void cache_install(int i, uint32_t blk, const void* data) {
 	g_bucket[b] = i;
 }
 
-void cache_drop(uint32_t blk) {
+static void cache_drop(uint32_t blk) {
 	cache_slot* s = cache_find(blk);
 	if (!s)
 		return;
@@ -128,7 +126,7 @@ void cache_drop(uint32_t blk) {
 	s->valid = false;
 }
 
-void cache_reset() {
+static void cache_reset() {
 	for (int i = 0; i < kCacheBuckets; ++i)
 		g_bucket[i] = -1;
 	for (int i = 0; i < kCacheSlots; ++i) {
@@ -139,7 +137,7 @@ void cache_reset() {
 	g_hand = 0;
 }
 
-bool read_block(uint32_t blk, void* buf) {
+static bool read_block(uint32_t blk, void* buf) {
 	if (blk >= g_blocks)
 		return false;
 	cache_slot* s = cache_find(blk);
@@ -161,7 +159,7 @@ bool read_block(uint32_t blk, void* buf) {
 	return true;
 }
 
-bool write_block(uint32_t blk, const void* buf) {
+static bool write_block(uint32_t blk, const void* buf) {
 	if (blk >= g_blocks)
 		return false;
 	if (!ata::write_sectors(g_part_lba + blk * (g_bs >> 9), g_bs >> 9, buf)) {
@@ -179,7 +177,7 @@ bool write_block(uint32_t blk, const void* buf) {
 	return true;
 }
 
-bool load_inode(uint32_t ino) {
+static bool load_inode(uint32_t ino) {
 	if (ino == 0 || ino > g_inodes)
 		return false;
 	if (!read_block(g_itb + (ino - 1) / g_ipb, g_b1))
@@ -188,15 +186,15 @@ bool load_inode(uint32_t ino) {
 	return true;
 }
 
-bool inode_is_dir() { return (r16(g_ino) & 0xF000) == 0x4000; }
-bool inode_is_file() { return (r16(g_ino) & 0xF000) == 0x8000; }
+static bool inode_is_dir() { return (r16(g_ino) & 0xF000) == 0x4000; }
+static bool inode_is_file() { return (r16(g_ino) & 0xF000) == 0x8000; }
 
-uint32_t inode_size() {
+static uint32_t inode_size() {
 	const uint32_t lo = r32(g_ino + 4);
 	return r32(g_ino + 0x6C) ? 0xFFFFFFFFu : lo;
 }
 
-void stamp_created() {
+static void stamp_created() {
 	const uint32_t t = time::unix();
 	w32(g_ino + 0x08, t); // atime
 	w32(g_ino + 0x0C, t); // ctime
@@ -210,7 +208,7 @@ void stamp_created() {
 	}
 }
 
-void stamp_written() {
+static void stamp_written() {
 	const uint32_t t = time::unix();
 	w32(g_ino + 0x0C, t);
 	w32(g_ino + 0x10, t);
@@ -220,7 +218,7 @@ void stamp_written() {
 	}
 }
 
-void stamp_read() {
+static void stamp_read() {
 	const uint32_t t = time::unix();
 	if (r32(g_ino + 0x08) == t)
 		return;
@@ -229,7 +227,7 @@ void stamp_read() {
 		w32(g_ino + 0x8C, 0);
 }
 
-bool extent_walk(const uint8_t* node, uint32_t lblock, uint32_t* phys, int depth) {
+static bool extent_walk(const uint8_t* node, uint32_t lblock, uint32_t* phys, int depth) {
 	if (depth > kMaxDepth || r16(node) != kExtMagic)
 		return false;
 	const uint16_t entries = r16(node + 2);
@@ -265,7 +263,7 @@ bool extent_walk(const uint8_t* node, uint32_t lblock, uint32_t* phys, int depth
 	return false;
 }
 
-bool indirect_walk(uint32_t lblock, uint32_t* phys) {
+static bool indirect_walk(uint32_t lblock, uint32_t* phys) {
 	const uint32_t per = g_bs / 4;
 	constexpr uint32_t kDirect = 12;
 	if (lblock < kDirect) {
@@ -294,15 +292,15 @@ bool indirect_walk(uint32_t lblock, uint32_t* phys) {
 	return false;
 }
 
-bool map_lblock(uint32_t lblock, uint32_t* phys) {
+static bool map_lblock(uint32_t lblock, uint32_t* phys) {
 	if (r32(g_ino + 0x20) & kExtentsFl)
 		return extent_walk(g_ino + 0x28, lblock, phys, 0);
 	return indirect_walk(lblock, phys);
 }
 
-uint32_t g_hint = 0;
+static uint32_t g_hint = 0;
 
-bool alloc_blocks(uint32_t n, uint32_t* first) {
+static bool alloc_blocks(uint32_t n, uint32_t* first) {
 	if (n == 0 || n > g_blocks || !read_block(g_bbb, g_b1))
 		return false;
 	uint32_t run = 0, start = 0;
@@ -332,7 +330,7 @@ bool alloc_blocks(uint32_t n, uint32_t* first) {
 }
 
 // first free inode in group 0
-uint32_t alloc_inode() {
+static uint32_t alloc_inode() {
 	if (!read_block(g_ibb, g_b1))
 		return 0;
 	for (uint32_t i = 0; i < g_ipg; ++i) {
@@ -346,11 +344,11 @@ uint32_t alloc_inode() {
 	return 0;
 }
 
-uint32_t dirent_used(uint32_t name_len) { return 8 + ((name_len + 3u) & ~3u); }
+static uint32_t dirent_used(uint32_t name_len) { return 8 + ((name_len + 3u) & ~3u); }
 
-bool store_inode(uint32_t ino);
+static bool store_inode(uint32_t ino);
 
-bool dir_add_entry(uint32_t dir_ino, const char* name, uint32_t ino, uint8_t type) {
+static bool dir_add_entry(uint32_t dir_ino, const char* name, uint32_t ino, uint8_t type) {
 	const uint32_t name_len = (uint32_t)strlen(name);
 	const uint32_t need = dirent_used(name_len);
 	if (need > g_bs)
@@ -432,7 +430,7 @@ bool dir_add_entry(uint32_t dir_ino, const char* name, uint32_t ino, uint8_t typ
 	return write_block(g_itb + (dir_ino - 1) / g_ipb, g_b1);
 }
 
-bool commit_counts(int used_blocks, int used_inodes, int used_dirs) {
+static bool commit_counts(int used_blocks, int used_inodes, int used_dirs) {
 	if (used_blocks == 0 && used_inodes == 0 && used_dirs == 0)
 		return true;
 	uint32_t stride = r16(g_sb + 0xFE);
@@ -460,15 +458,13 @@ bool commit_counts(int used_blocks, int used_inodes, int used_dirs) {
 }
 
 // push the inode image in g_ino
-bool store_inode(uint32_t ino) {
+static bool store_inode(uint32_t ino) {
 	const uint32_t tbl = g_itb + (ino - 1) / g_ipb;
 	if (!read_block(tbl, g_b1))
 		return false;
 	memcpy(g_b1 + ((ino - 1) % g_ipb) * g_inode_size, g_ino, g_inode_size);
 	return write_block(tbl, g_b1);
 }
-
-} // namespace
 
 bool mount(uint32_t disk_lba) {
 	cache_reset();

@@ -17,14 +17,12 @@ namespace task {
 task g_tasks[kMaxTask];
 task* g_current = nullptr;
 
-namespace {
+static constexpr uint32_t kKernelStackBytes = 16384;
 
-constexpr uint32_t kKernelStackBytes = 16384;
+static constexpr uint32_t kKernelSlack = 4096u;
+static constexpr uint32_t kKernelAlloc = kKernelStackBytes + kKernelSlack;
 
-constexpr uint32_t kKernelSlack = 4096u;
-constexpr uint32_t kKernelAlloc = kKernelStackBytes + kKernelSlack;
-
-int free_slot() {
+static int free_slot() {
 	for (int i = 1; i < kMaxTask; ++i)
 		if (g_tasks[i].state == kFree)
 			return i;
@@ -46,15 +44,13 @@ static void purge_notes(uint32_t pid) {
 	}
 }
 
-int count_fds(const vfs::ofile* fd) {
+static int count_fds(const vfs::ofile* fd) {
 	int n = 0;
 	for (int i = 0; i < vfs::kMaxFd; ++i)
 		if (fd[i].n.type)
 			++n;
 	return n;
 }
-
-} // namespace
 
 task* find(uint32_t pid) {
 	for (int i = 0; i < kMaxTask; ++i)
@@ -270,16 +266,14 @@ const char* state_name(uint32_t state) {
 
 extern "C" void task_switch_asm(uint32_t user_esp, uint32_t kernel_esp, uint32_t from_user, uint32_t* slot);
 
-namespace {
-
-void push_frame(task* t, const Registers& r) {
+static void push_frame(task* t, const Registers& r) {
 	uint32_t* f = t->kstack - kFrWords;
 	memcpy(f, &r, sizeof(Registers));
 }
 
-uint32_t resume_esp(const task* t) { return (uint32_t)(uintptr_t)(t->kstack - kFrWords); }
+static uint32_t resume_esp(const task* t) { return (uint32_t)(uintptr_t)(t->kstack - kFrWords); }
 
-void switch_to(task* to) {
+static void switch_to(task* to) {
 	uint32_t flags;
 	asm volatile("pushfl\n\tpopl %0\n\tcli" : "=r"(flags) : : "memory");
 
@@ -303,7 +297,7 @@ void switch_to(task* to) {
 	task_switch_asm(from_user ? resume_esp(to) : 0, to->kslot[5], from_user, to->kslot);
 }
 
-task* pick() {
+static task* pick() {
 	const int from = g_current ? (int)(g_current - g_tasks) : 0;
 	for (int i = 1; i <= kMaxTask; ++i) {
 		const int s = (from + i) % kMaxTask;
@@ -312,8 +306,6 @@ task* pick() {
 	}
 	return nullptr;
 }
-
-} // namespace
 
 extern "C" void task_switch_now() {
 	reap();

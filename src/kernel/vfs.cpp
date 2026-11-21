@@ -16,15 +16,13 @@
 
 namespace vfs {
 
-namespace {
-
 // pool of transient nodes. the root, devfs and the devices are separate statics so they never get recycled. resolve
 // hands out pool nodes and callers use them right away, fine while we are single threaded
-constexpr int kPool = 40;
-node g_pool[kPool];
-int g_head = 0;
+static constexpr int kPool = 40;
+static node g_pool[kPool];
+static int g_head = 0;
 
-node* pool_fresh() {
+static node* pool_fresh() {
 	const int s = g_head;
 	g_head = (g_head + 1) % kPool;
 	memset(&g_pool[s], 0, sizeof g_pool[s]);
@@ -37,18 +35,18 @@ struct mnt {
 	uint32_t ino;
 	node* tree;
 };
-mnt g_mounts[8];
-int g_mounts_n = 0;
+static mnt g_mounts[8];
+static int g_mounts_n = 0;
 
-node g_root;  // the ext4 root
-node g_devfs; // the dev tree root
+static node g_root;	 // the ext4 root
+static node g_devfs; // the dev tree root
 
 // ext4 backend adapter
 
-int ext_read(node* n, void* buf, uint32_t off, uint32_t len) { return (int)fs::read(n->inode, buf, len, off); }
+static int ext_read(node* n, void* buf, uint32_t off, uint32_t len) { return (int)fs::read(n->inode, buf, len, off); }
 
 // writing through a descriptor
-int ext_write(node* n, const void* buf, uint32_t off, uint32_t len) {
+static int ext_write(node* n, const void* buf, uint32_t off, uint32_t len) {
 	if (!n->inode)
 		return -1;
 	if (!fs::write_at(n->inode, buf, off, len))
@@ -59,9 +57,9 @@ int ext_write(node* n, const void* buf, uint32_t off, uint32_t len) {
 	return (int)len;
 }
 
-node* ext_find_child(node* n, const char* name);
+static node* ext_find_child(node* n, const char* name);
 
-int ext_readdir(node* n, uint32_t index, node* out) {
+static int ext_readdir(node* n, uint32_t index, node* out) {
 	struct hit {
 		uint32_t want, seen;
 		bool found;
@@ -117,7 +115,7 @@ int ext_readdir(node* n, uint32_t index, node* out) {
 	return 0;
 }
 
-node* ext_find_child(node* n, const char* name) {
+static node* ext_find_child(node* n, const char* name) {
 	struct hit {
 		const char* want;
 		bool found;
@@ -174,26 +172,26 @@ struct dev {
 	dev_ioctl_fn ctl;
 };
 
-int dev_null_rd(void*, void*, uint32_t len) {
+static int dev_null_rd(void*, void*, uint32_t len) {
 	(void)len;
 	return 0; // nothing here, reads hit eof
 }
-int dev_null_wr(void*, const void*, uint32_t len) { return (int)len; } // swallows it all
+static int dev_null_wr(void*, const void*, uint32_t len) { return (int)len; } // swallows it all
 
-int dev_zero_rd(void*, void* buf, uint32_t len) {
+static int dev_zero_rd(void*, void* buf, uint32_t len) {
 	memset(buf, 0, len);
 	return (int)len;
 }
-int dev_zero_wr(void*, const void*, uint32_t len) { return (int)len; }
+static int dev_zero_wr(void*, const void*, uint32_t len) { return (int)len; }
 
-int tty_take(void* buf, uint32_t len);
+static int tty_take(void* buf, uint32_t len);
 
-int dev_console_rd(void*, void* buf, uint32_t len) {
+static int dev_console_rd(void*, void* buf, uint32_t len) {
 	if (len == 0)
 		return 0;
 	return tty_take(buf, len);
 }
-int dev_console_wr(void*, const void* buf, uint32_t len) {
+static int dev_console_wr(void*, const void* buf, uint32_t len) {
 	const char* s = (const char*)buf;
 	for (uint32_t i = 0; i < len; ++i) {
 		serial::putc(s[i]);
@@ -202,7 +200,7 @@ int dev_console_wr(void*, const void* buf, uint32_t len) {
 	return (int)len;
 }
 
-int dev_serial_rd(void*, void* buf, uint32_t len) {
+static int dev_serial_rd(void*, void* buf, uint32_t len) {
 	if (len == 0)
 		return 0;
 	int c = serial::recv();
@@ -211,14 +209,14 @@ int dev_serial_rd(void*, void* buf, uint32_t len) {
 	((uint8_t*)buf)[0] = (uint8_t)c;
 	return 1;
 }
-int dev_serial_wr(void*, const void* buf, uint32_t len) {
+static int dev_serial_wr(void*, const void* buf, uint32_t len) {
 	const char* s = (const char*)buf;
 	for (uint32_t i = 0; i < len; ++i)
 		serial::putc(s[i]);
 	return (int)len;
 }
 
-int dev_kbd_rd(void*, void* buf, uint32_t len) {
+static int dev_kbd_rd(void*, void* buf, uint32_t len) {
 	if (len == 0)
 		return 0;
 	for (;;) {
@@ -231,14 +229,14 @@ int dev_kbd_rd(void*, void* buf, uint32_t len) {
 	}
 }
 
-int dev_fb_wr(void*, const void* buf, uint32_t len) {
+static int dev_fb_wr(void*, const void* buf, uint32_t len) {
 	const char* s = (const char*)buf;
 	for (uint32_t i = 0; i < len; ++i)
 		console::putchar(s[i]); // to the screen only, no serial
 	return (int)len;
 }
 
-constexpr uint32_t kTtyBuf = 256;
+static constexpr uint32_t kTtyBuf = 256;
 
 struct tty {
 	char buf[kTtyBuf];
@@ -254,32 +252,32 @@ struct tty {
 };
 
 // set by ioctl when a reader would rather be told there is nothing than be made to wait for it.
-bool g_tty_nonblock;
+static bool g_tty_nonblock;
 
-tty g_tty;
+static tty g_tty;
 
-void tty_echo(const char* s, uint32_t n) {
+static void tty_echo(const char* s, uint32_t n) {
 	for (uint32_t i = 0; i < n; ++i) {
 		serial::putc(s[i]);
 		console::putchar(s[i]);
 	}
 }
-void tty_echo(char c) { tty_echo(&c, 1); }
+static void tty_echo(char c) { tty_echo(&c, 1); }
 
-int tty_buffered() { return g_tty.head != g_tty.tail ? 1 : 0; }
+static int tty_buffered() { return g_tty.head != g_tty.tail ? 1 : 0; }
 
-uint32_t tty_count() { return (g_tty.head + kTtyBuf - g_tty.tail) % kTtyBuf; }
+static uint32_t tty_count() { return (g_tty.head + kTtyBuf - g_tty.tail) % kTtyBuf; }
 
-void tty_put(char c) {
+static void tty_put(char c) {
 	if (tty_count() + 1 >= kTtyBuf)
 		return;
 	g_tty.buf[g_tty.head] = c;
 	g_tty.head = (g_tty.head + 1u) % kTtyBuf;
 }
 
-void tty_drop() { g_tty.head = g_tty.tail; }
+static void tty_drop() { g_tty.head = g_tty.tail; }
 
-int tty_key(bool block) {
+static int tty_key(bool block) {
 	int c = kbd::poll_char();
 	if (c >= 0)
 		return c;
@@ -291,7 +289,7 @@ int tty_key(bool block) {
 	return -1;
 }
 
-void tty_input(int c) {
+static void tty_input(int c) {
 	const bool canon = (g_tty.flags & kTtyCanon) != 0;
 	const bool echo = (g_tty.flags & kTtyEcho) != 0;
 	const bool sigs = (g_tty.flags & kTtySig) != 0;
@@ -342,7 +340,7 @@ void tty_input(int c) {
 	}
 }
 
-int tty_take(void* buf, uint32_t len) {
+static int tty_take(void* buf, uint32_t len) {
 	uint8_t* out = (uint8_t*)buf;
 	uint32_t got = 0;
 
@@ -354,7 +352,7 @@ int tty_take(void* buf, uint32_t len) {
 }
 
 // deliver a whole line assembled here out of the keystrokes that make it up
-int dev_tty_rd(void*, void* buf, uint32_t len) {
+static int dev_tty_rd(void*, void* buf, uint32_t len) {
 	if (len == 0)
 		return 0;
 	const bool canon = (g_tty.flags & kTtyCanon) != 0;
@@ -391,12 +389,12 @@ int dev_tty_rd(void*, void* buf, uint32_t len) {
 	}
 }
 
-int dev_tty_wr(void*, const void* buf, uint32_t len) {
+static int dev_tty_wr(void*, const void* buf, uint32_t len) {
 	tty_echo((const char*)buf, len);
 	return (int)len;
 }
 
-int dev_tty_ctl(void*, uint32_t req, void* arg) {
+static int dev_tty_ctl(void*, uint32_t req, void* arg) {
 	if (!arg)
 		return -kErrInval;
 	switch (req) {
@@ -419,7 +417,7 @@ int dev_tty_ctl(void*, uint32_t req, void* arg) {
 	}
 }
 
-const dev g_devs[] = {
+static const dev g_devs[] = {
 	{"null", dev_null_rd, dev_null_wr, nullptr},
 	{"zero", dev_zero_rd, dev_zero_wr, nullptr},
 	{"console", dev_console_rd, dev_console_wr, nullptr},
@@ -428,24 +426,24 @@ const dev g_devs[] = {
 	{"fb", nullptr, dev_fb_wr, nullptr},
 	{"tty", dev_tty_rd, dev_tty_wr, dev_tty_ctl},
 };
-constexpr uint32_t kDevCount = sizeof(g_devs) / sizeof(g_devs[0]);
+static constexpr uint32_t kDevCount = sizeof(g_devs) / sizeof(g_devs[0]);
 
-int dev_read(node* n, void* buf, uint32_t off, uint32_t len) {
+static int dev_read(node* n, void* buf, uint32_t off, uint32_t len) {
 	(void)off;
 	dev* d = (dev*)n->internal;
 	return d->rd ? d->rd(d, buf, len) : 0;
 }
-int dev_write(node* n, const void* buf, uint32_t off, uint32_t len) {
+static int dev_write(node* n, const void* buf, uint32_t off, uint32_t len) {
 	(void)off;
 	dev* d = (dev*)n->internal;
 	return d->wr ? d->wr(d, buf, len) : 0;
 }
-int dev_node_ctl(node* n, uint32_t req, void* arg) {
+static int dev_node_ctl(node* n, uint32_t req, void* arg) {
 	dev* d = (dev*)n->internal;
 	return d->ctl ? d->ctl(d, req, arg) : -kErrInval;
 }
 
-int dev_readdir(node* n, uint32_t index, node* out) {
+static int dev_readdir(node* n, uint32_t index, node* out) {
 	(void)n;
 	dev* d = (dev*)n->internal;
 	if (index >= kDevCount)
@@ -467,7 +465,7 @@ int dev_readdir(node* n, uint32_t index, node* out) {
 	return 0;
 }
 
-node* dev_find_child(node* n, const char* name) {
+static node* dev_find_child(node* n, const char* name) {
 	dev* d = (dev*)n->internal;
 	for (uint32_t i = 0; i < kDevCount; ++i) {
 		if (strcmp(name, d[i].name) != 0)
@@ -487,8 +485,6 @@ node* dev_find_child(node* n, const char* name) {
 	}
 	return nullptr;
 }
-
-} // namespace
 
 // take everything waiting at the keyboard or on the line and let the discipline have it
 void tty_drain() {
@@ -580,7 +576,6 @@ bool mount(node* tree, const char* at) {
 static ofile* fds() { return task::g_current ? task::g_current->fd : nullptr; }
 
 // the pipe storage
-namespace {
 
 struct pipebuf {
 	uint8_t buf[kPipeBytes];
@@ -594,15 +589,13 @@ struct pipebuf {
 	int open;
 };
 
-pipebuf g_pipes[kMaxPipe];
+static pipebuf g_pipes[kMaxPipe];
 
 struct memwin {
 	uint8_t* buf;
 	uint32_t cap;
 	uint32_t wpos;
 };
-
-} // namespace
 
 static pipebuf* pipe_of(node* n) { return (pipebuf*)n->internal; }
 
@@ -755,9 +748,8 @@ int fd_write(int fd, const void* buf, uint32_t len) {
 }
 
 // the pipes
-namespace {
 
-int pipe_rd(node* n, void* buf, uint32_t, uint32_t len) {
+static int pipe_rd(node* n, void* buf, uint32_t, uint32_t len) {
 	pipebuf* p = pipe_of(n);
 	if (!p)
 		return -1;
@@ -781,7 +773,7 @@ int pipe_rd(node* n, void* buf, uint32_t, uint32_t len) {
 	return (int)got;
 }
 
-int pipe_wr(node* n, const void* buf, uint32_t, uint32_t len) {
+static int pipe_wr(node* n, const void* buf, uint32_t, uint32_t len) {
 	pipebuf* p = pipe_of(n);
 	if (!p)
 		return -1;
@@ -803,8 +795,6 @@ int pipe_wr(node* n, const void* buf, uint32_t, uint32_t len) {
 	}
 	return (int)put;
 }
-
-} // namespace
 
 int pipe(int ends[2]) {
 	ofile* g_fd = fds();

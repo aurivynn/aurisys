@@ -41,5 +41,6 @@ static_assert(sizeof(Registers) / 4 == kFrWords, "the save area must be the whol
 typedef void (*irq_handler_t)(Registers*);
 
 void irq_install(int irq, irq_handler_t fn); // irq 0..15
+const char* fault_name(int vec);
 
 extern "C" void isr_common(Registers* r); // jumped to by the shared stub
