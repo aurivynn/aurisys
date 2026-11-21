@@ -3,6 +3,7 @@
 #include "drivers/ata.h"
 #include "lib/mem.h"
 #include "lib/str.h"
+#include "lib/time.h"
 
 #include <stdint.h>
 
@@ -195,6 +196,39 @@ uint32_t inode_size() {
 	return r32(g_ino + 0x6C) ? 0xFFFFFFFFu : lo;
 }
 
+void stamp_created() {
+	const uint32_t t = time::unix();
+	w32(g_ino + 0x08, t); // atime
+	w32(g_ino + 0x0C, t); // ctime
+	w32(g_ino + 0x10, t); // mtime
+	if (g_inode_size >= 0x98) {
+		w32(g_ino + 0x84, 0); // ctime extra
+		w32(g_ino + 0x88, 0); // mtime extra
+		w32(g_ino + 0x8C, 0); // atime extra
+		w32(g_ino + 0x90, t); // crtime
+		w32(g_ino + 0x94, 0); // crtime extra
+	}
+}
+
+void stamp_written() {
+	const uint32_t t = time::unix();
+	w32(g_ino + 0x0C, t);
+	w32(g_ino + 0x10, t);
+	if (g_inode_size >= 0x90) {
+		w32(g_ino + 0x84, 0);
+		w32(g_ino + 0x88, 0);
+	}
+}
+
+void stamp_read() {
+	const uint32_t t = time::unix();
+	if (r32(g_ino + 0x08) == t)
+		return;
+	w32(g_ino + 0x08, t);
+	if (g_inode_size >= 0x90)
+		w32(g_ino + 0x8C, 0);
+}
+
 bool extent_walk(const uint8_t* node, uint32_t lblock, uint32_t* phys, int depth) {
 	if (depth > kMaxDepth || r16(node) != kExtMagic)
 		return false;
@@ -314,6 +348,8 @@ uint32_t alloc_inode() {
 
 uint32_t dirent_used(uint32_t name_len) { return 8 + ((name_len + 3u) & ~3u); }
 
+bool store_inode(uint32_t ino);
+
 bool dir_add_entry(uint32_t dir_ino, const char* name, uint32_t ino, uint8_t type) {
 	const uint32_t name_len = (uint32_t)strlen(name);
 	const uint32_t need = dirent_used(name_len);
@@ -350,7 +386,10 @@ bool dir_add_entry(uint32_t dir_ino, const char* name, uint32_t ino, uint8_t typ
 			g_b2[new_off + 6] = (uint8_t)name_len;
 			g_b2[new_off + 7] = type;
 			memcpy(g_b2 + new_off + 8, name, name_len);
-			return write_block(phys, g_b2);
+			if (!write_block(phys, g_b2))
+				return false;
+			stamp_written(); // the parent gained an entry
+			return store_inode(dir_ino);
 		}
 	}
 
@@ -386,6 +425,7 @@ bool dir_add_entry(uint32_t dir_ino, const char* name, uint32_t ino, uint8_t typ
 		return false;
 
 	// persist the grown dir inode
+	stamp_written();
 	if (!read_block(g_itb + (dir_ino - 1) / g_ipb, g_b1))
 		return false;
 	memcpy(g_b1 + ((dir_ino - 1) % g_ipb) * g_inode_size, g_ino, g_inode_size);
@@ -624,6 +664,9 @@ bool getstat(uint32_t ino, struct stat* out) {
 	out->mode = r16(g_ino);
 	out->blocks = r32(g_ino + 0x1C);
 	out->links = r16(g_ino + 0x1A);
+	out->atime = r32(g_ino + 0x08);
+	out->mtime = r32(g_ino + 0x10);
+	out->ctime = r32(g_ino + 0x0C);
 	return true;
 }
 
@@ -648,6 +691,12 @@ uint32_t read(uint32_t ino, void* buf, uint32_t len, uint32_t off) {
 			return done;
 		memcpy(out + done, g_b1 + inblk, take);
 		done += take;
+	}
+	if (done) {
+		if (r32(g_ino + 0x08) != time::unix()) {
+			stamp_read();
+			store_inode(ino);
+		}
 	}
 	return done;
 }
@@ -829,6 +878,9 @@ bool write_file(const char* base, const char* path, const void* data, uint32_t l
 		w16(g_ino + 0x2A, 0); // entries
 		w16(g_ino + 0x2C, 4); // max entries that fit i_block
 		w16(g_ino + 0x2E, 0); // depth 0
+		if (g_inode_size >= 256)
+			w16(g_ino + 0x80, 32);
+		stamp_created();
 	}
 
 	// no journal on this volume
@@ -864,6 +916,7 @@ bool write_file(const char* base, const char* path, const void* data, uint32_t l
 		w32(g_ino + 4, old_size + len);
 		w32(g_ino + 0x1C, r32(g_ino + 0x1C) + used * (g_bs >> 9));
 	}
+	stamp_written();
 	if (!store_inode(ino))
 		return false;
 
@@ -969,6 +1022,7 @@ bool write_at(uint32_t ino, const void* buf, uint32_t off, uint32_t len) {
 	}
 	if (off + len > old_size)
 		w32(g_ino + 4, off + len);
+	stamp_written();
 	if (!store_inode(ino))
 		return false;
 
@@ -1023,9 +1077,12 @@ bool mkdir(const char* base, const char* path) {
 	w16(g_ino + 0x2A, 1);
 	w16(g_ino + 0x2C, 4);
 	w16(g_ino + 0x2E, 0);
+	if (g_inode_size >= 256)
+		w16(g_ino + 0x80, 32);
 	w32(g_ino + 0x34, 0);	 // ee_block 0
 	w16(g_ino + 0x38, 1);	 // ee_len
 	w32(g_ino + 0x3C, phys); // ee_start lo
+	stamp_created();
 	if (!store_inode(ino))
 		return false;
 
@@ -1130,6 +1187,12 @@ bool rm(const char* base, const char* path) {
 		if (!done)
 			return false;
 	}
+
+	if (!load_inode(parent_ino) || !inode_is_dir())
+		return false;
+	stamp_written();
+	if (!store_inode(parent_ino))
+		return false;
 
 	ext_entry old[4];
 	uint32_t old_n = 0;

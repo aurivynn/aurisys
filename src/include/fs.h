@@ -12,6 +12,9 @@ struct stat {
 	uint16_t mode;	 // type bits: dir 0x4000, regular 0x8000
 	uint32_t blocks; // in 512byte units
 	uint16_t links;
+	uint32_t atime;
+	uint32_t mtime;
+	uint32_t ctime;
 };
 
 using dirent_cb = bool (*)(const char* name, uint32_t ino, uint8_t type, void* ctx);

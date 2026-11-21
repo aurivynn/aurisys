@@ -106,8 +106,14 @@ int ext_readdir(node* n, uint32_t index, node* out) {
 	out->readdir = ext_readdir;
 	out->find_child = ext_find_child;
 	fs::stat st;
-	if (fs::getstat(c.ino, &st))
+	if (fs::getstat(c.ino, &st)) {
 		out->size = st.size;
+		out->mode = st.mode;
+		out->links = st.links;
+		out->atime = st.atime;
+		out->mtime = st.mtime;
+		out->ctime = st.ctime;
+	}
 	return 0;
 }
 
@@ -144,8 +150,14 @@ node* ext_find_child(node* n, const char* name) {
 	out->readdir = ext_readdir;
 	out->find_child = ext_find_child;
 	fs::stat st;
-	if (fs::getstat(c.ino, &st))
+	if (fs::getstat(c.ino, &st)) {
 		out->size = st.size;
+		out->mode = st.mode;
+		out->links = st.links;
+		out->atime = st.atime;
+		out->mtime = st.mtime;
+		out->ctime = st.ctime;
+	}
 	return out;
 }
 

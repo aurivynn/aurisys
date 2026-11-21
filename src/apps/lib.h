@@ -27,6 +27,7 @@ int chdir(const char* path);
 int statfs(fs_stat* out);
 int meminfo(mem_stat* out);
 int uptime_ms();
+int time();
 
 int ioctl(int fd, uint32_t req, void* arg);
 int tty_get(int fd, uint32_t* flags); // the modes as they are

@@ -28,6 +28,11 @@ struct node {
 	uint8_t pad;
 	uint16_t pad2;
 	uint32_t size; // bytes
+	uint16_t mode;
+	uint16_t links;
+	uint32_t atime;
+	uint32_t mtime;
+	uint32_t ctime;
 
 	node* parent;
 	node* mount;

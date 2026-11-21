@@ -50,6 +50,11 @@ int dispatch(regs* r) {
 		d->inode = out.inode;
 		d->size = out.size;
 		d->type = out.type;
+		d->mode = out.mode;
+		d->links = out.links;
+		d->atime = out.atime;
+		d->mtime = out.mtime;
+		d->ctime = out.ctime;
 		return 0;
 	}
 	case SYS_exit:
@@ -80,9 +85,32 @@ int dispatch(regs* r) {
 		if (!n)
 			return -1;
 		file_stat* s = (file_stat*)r->ecx;
+		memset(s, 0, sizeof *s);
 		s->inode = n->inode;
 		s->size = n->size;
 		s->type = n->type;
+		s->mode = n->mode;
+		s->links = n->links;
+		s->atime = n->atime;
+		s->mtime = n->mtime;
+		s->ctime = n->ctime;
+
+		fs::stat st;
+		if (n->inode && fs::getstat(n->inode, &st)) {
+			s->size = st.size;
+			s->mode = st.mode;
+			s->links = st.links;
+			s->atime = st.atime;
+			s->mtime = st.mtime;
+			s->ctime = st.ctime;
+		} else if (!s->mode) {
+			s->mode = n->type == vfs::kTypeDir	  ? 0040755u
+					  : n->type == vfs::kTypeChar ? 0020666u
+					  : n->type == vfs::kTypeFifo ? 0010666u
+												  : 0100644u;
+		}
+		if (!s->links)
+			s->links = 1;
 		return 0;
 	}
 	case SYS_cwd: {
@@ -121,6 +149,8 @@ int dispatch(regs* r) {
 			return -1;
 		*(uint32_t*)r->ebx = time::ms();
 		return 0;
+	case SYS_time:
+		return (int)time::unix();
 	case SYS_panic:
 		panic("app requested a panic");
 

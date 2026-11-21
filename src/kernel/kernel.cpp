@@ -379,6 +379,7 @@ extern "C" void kernel_main(bootinfo* bi) {
 	pic::remap();
 	kbd::init();  // irq1 -> ring buffer
 	timer_init(); // irq0 -> ms clock
+	const bool rtc_ok = time::init();
 	heap_init(bi);
 	paging::paging_init();
 	gdt_init();
@@ -403,6 +404,7 @@ extern "C" void kernel_main(bootinfo* bi) {
 	test_heap();
 	test_paging();
 	test_gdt();
+	both("    rtc=%s\n", rtc_ok ? "OK" : "FAIL");
 
 	const bool ata_ok = ata::init();
 	both("    ata=%s\n", ata_ok ? "OK" : "FAIL");

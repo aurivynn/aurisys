@@ -2,6 +2,7 @@
 
 #include "arch/isr.h"
 #include "drivers/pic.h"
+#include "drivers/rtc.h"
 #include "lib/time.h"
 
 #include <stdint.h>
@@ -21,6 +22,11 @@ constexpr uint32_t kTickThousandths = (uint32_t)(((uint64_t)kReload * 1000000u +
 
 namespace time {
 
+namespace {
+uint32_t g_unix_base = 0;
+uint32_t g_unix_anchor = 0;
+} // namespace
+
 // ticks to milliseconds
 uint32_t ms() {
 	const uint32_t lo = (uint32_t)g_ticks;
@@ -29,6 +35,16 @@ uint32_t ms() {
 	const uint32_t part = kTickThousandths % 1000u;
 	return lo * whole + (lo * part) / 1000u + (hi * part) / 1000u;
 }
+
+bool init() {
+	uint32_t base = 0;
+	const bool ok = rtc::read(&base);
+	g_unix_base = ok ? base : 0;
+	g_unix_anchor = ms();
+	return ok;
+}
+
+uint32_t unix() { return g_unix_base + (ms() - g_unix_anchor) / 1000u; }
 
 } // namespace time
 

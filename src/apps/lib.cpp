@@ -58,6 +58,7 @@ int uptime_ms() {
 	(void)trp(SYS_uptime, (uint32_t)(uintptr_t)&ms, 0, 0, 0, 0);
 	return (int)ms;
 }
+int time() { return (int)trp(SYS_time, 0, 0, 0, 0, 0); }
 
 int fork() { return (int)trp(SYS_fork, 0, 0, 0, 0, 0); }
 

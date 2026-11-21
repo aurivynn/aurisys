@@ -41,6 +41,7 @@ enum {
 	SYS_sigreturn,
 	SYS_ioctl,
 	SYS_chdir,
+	SYS_time,
 };
 
 // terminal modes, for ioctl on /dev/tty
@@ -93,12 +94,22 @@ struct vfs_dirent {
 	uint32_t inode;
 	uint32_t size; // bytes
 	uint8_t type;  // one of the kType bits
+	uint16_t mode;
+	uint16_t links;
+	uint32_t atime;
+	uint32_t mtime;
+	uint32_t ctime;
 };
 
 struct file_stat {
 	uint32_t inode;
 	uint32_t size;
 	uint8_t type;
+	uint16_t mode;
+	uint16_t links;
+	uint32_t atime;
+	uint32_t mtime;
+	uint32_t ctime;
 };
 
 struct fs_stat {
